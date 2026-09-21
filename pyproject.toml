@@ -1,0 +1,23 @@
+[project]
+name = "analytics-back-end"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "andyy2024", email = "a.boteror@uniandes.edu.co" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "dj-database-url==3.1.2",
+    "django==6.1.1",
+    "psycopg2==2.9.13",
+    "psycopg2-binary==2.9.13",
+    "python-dotenv==1.2.3",
+]
+
+[project.scripts]
+analytics-back-end = "analytics_back_end:main"
+
+[build-system]
+requires = ["uv_build>=0.12.17,<0.13.0"]
+build-backend = "uv_build"
