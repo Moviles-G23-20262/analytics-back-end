@@ -22,7 +22,8 @@ def api_root(request):
     return JsonResponse({
         "message": "Welcome to the API",
         "endpoints": {
-            "categories": "/analytics/categories/"
+            "categories": "/analytics/categories/",
+            "activity_times": "/analytics/activity-times/"
         }
     })
 
