@@ -1,9 +1,16 @@
 from django.shortcuts import render
 
 from django.http import JsonResponse
-from django.db.models import Count
+import logging
+
+from django.db import ProgrammingError
+from django.db.models import Count, Func, IntegerField
 from django.db.models.functions import ExtractHour, ExtractWeekDay
-from .models import Material, AnalyticsEvent, AnalyticsEventType
+from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange
+
+CAMPUS_TIME_ZONE = 'America/Bogota'
+
+logger = logging.getLogger(__name__)
 
 # Business Question 5
 def activity_by_time(request):
@@ -63,3 +70,46 @@ def category_performance(request):
 
 # Business Question 11
 # TODO: implement
+
+
+class CampusHour(Func):
+    template = f"EXTRACT(HOUR FROM %(expressions)s AT TIME ZONE 'UTC' AT TIME ZONE '{CAMPUS_TIME_ZONE}')::int"
+    output_field = IntegerField()
+
+
+def meeting_point_usage(request):
+    hour = request.GET.get('hour')
+    if hour is not None:
+        if not hour.isdigit() or not 0 <= int(hour) <= 23:
+            return JsonResponse({'error': 'hour must be an integer between 0 and 23'}, status=400)
+        hour = int(hour)
+
+    exchanges = Exchange.objects.filter(meeting_point__isnull=False).annotate(hour=CampusHour('completed_at'))
+    if hour is not None:
+        exchanges = exchanges.filter(hour=hour)
+
+    results = (
+        exchanges
+        .values('hour', 'meeting_point_id', 'meeting_point__name', 'meeting_point__lat', 'meeting_point__lng', 'meeting_point__is_monitored')
+        .annotate(total=Count('id'))
+        .order_by('hour', '-total', 'meeting_point__name')
+    )
+
+    try:
+        data = [
+            {
+                'meeting_point_id': str(row['meeting_point_id']),
+                'name': row['meeting_point__name'],
+                'lat': row['meeting_point__lat'],
+                'lng': row['meeting_point__lng'],
+                'is_monitored': row['meeting_point__is_monitored'],
+                'hour': row['hour'],
+                'total': row['total'],
+            }
+            for row in results
+        ]
+    except ProgrammingError:
+        logger.warning('Meeting point tables are missing; apply the BQ12 Prisma migration')
+        return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'hour': hour, 'available': False, 'data': []})
+
+    return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'hour': hour, 'available': True, 'data': data})

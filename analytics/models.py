@@ -28,6 +28,12 @@ class NotificationType(models.TextChoices):
     SMART_MATCH = 'SMART_MATCH', 'Smart Match'
     OTHER = 'OTHER', 'Other'
 
+class MeetingZoneType(models.TextChoices):
+    LIBRARY = 'LIBRARY', 'Library'
+    STUDENT_CENTER = 'STUDENT_CENTER', 'Student Center'
+    BUILDING_LOBBY = 'BUILDING_LOBBY', 'Building Lobby'
+    PLAZA = 'PLAZA', 'Plaza'
+
 class AnalyticsEventType(models.TextChoices):
     LISTING_VIEW = 'LISTING_VIEW', 'Listing View'
     SEARCH = 'SEARCH', 'Search'
@@ -103,6 +109,21 @@ class Message(models.Model):
         db_table = 'Message'
 
 
+class MeetingPoint(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=255)
+    detail = models.CharField(max_length=255, null=True, blank=True)
+    zone_type = models.CharField(max_length=50, choices=MeetingZoneType.choices, db_column='zoneType')
+    is_monitored = models.BooleanField(db_column='isMonitored', default=False)
+    lat = models.FloatField()
+    lng = models.FloatField()
+    created_at = models.DateTimeField(db_column='createdAt')
+
+    class Meta:
+        managed = False
+        db_table = 'MeetingPoint'
+
+
 class Exchange(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     material = models.OneToOneField(Material, on_delete=models.DO_NOTHING, db_column='materialId', related_name='exchange')
@@ -110,6 +131,9 @@ class Exchange(models.Model):
     seller = models.ForeignKey(User, on_delete=models.DO_NOTHING, db_column='sellerId', related_name='seller_exchanges')
     price = models.DecimalField(max_digits=10, decimal_places=2)
     completed_at = models.DateTimeField(db_column='completedAt')
+    meeting_point = models.ForeignKey(MeetingPoint, on_delete=models.DO_NOTHING, db_column='meetingPointId', null=True, blank=True, related_name='exchanges')
+    lat = models.FloatField(null=True, blank=True)
+    lng = models.FloatField(null=True, blank=True)
 
     class Meta:
         managed = False
