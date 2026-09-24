@@ -25,6 +25,7 @@ def api_root(request):
             "categories": "/analytics/categories/",
             "activity_times": "/analytics/activity-times/",
             "wishlist_conversion": "/analytics/wishlist-conversion/"
+            "meeting_points": "/analytics/meeting-points/"
         }
     })
 
