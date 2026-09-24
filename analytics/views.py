@@ -1,11 +1,16 @@
 from django.shortcuts import render
 
 from django.http import JsonResponse
+import logging
+
+from django.db import ProgrammingError
 from django.db.models import Count, Func, IntegerField
 from django.db.models.functions import ExtractHour, ExtractWeekDay
 from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
+
+logger = logging.getLogger(__name__)
 
 # Business Question 5
 def activity_by_time(request):
@@ -90,10 +95,8 @@ def meeting_point_usage(request):
         .order_by('hour', '-total', 'meeting_point__name')
     )
 
-    return JsonResponse({
-        'time_zone': CAMPUS_TIME_ZONE,
-        'hour': hour,
-        'data': [
+    try:
+        data = [
             {
                 'meeting_point_id': str(row['meeting_point_id']),
                 'name': row['meeting_point__name'],
@@ -104,5 +107,9 @@ def meeting_point_usage(request):
                 'total': row['total'],
             }
             for row in results
-        ],
-    })
+        ]
+    except ProgrammingError:
+        logger.warning('Meeting point tables are missing; apply the BQ12 Prisma migration')
+        return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'hour': hour, 'available': False, 'data': []})
+
+    return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'hour': hour, 'available': True, 'data': data})
