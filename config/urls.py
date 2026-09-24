@@ -23,7 +23,8 @@ def api_root(request):
         "message": "Welcome to the API",
         "endpoints": {
             "categories": "/analytics/categories/",
-            "activity_times": "/analytics/activity-times/"
+            "activity_times": "/analytics/activity-times/",
+            "wishlist_conversion": "/analytics/wishlist-conversion/"
         }
     })
 
