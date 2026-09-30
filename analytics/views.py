@@ -118,6 +118,73 @@ def wishlist_smart_match_conversion(request):
     #Convierte el dicc a JsonResponse
     return JsonResponse(summarize_whishlist_conversion(wishlist_items, smart_matches, exchanges))
 
+# Business Question 2
+def _percentile(sorted_values, pct):
+    #percentil con interpolacion lineal sobre una lista ya ordenada
+    if not sorted_values:
+        return 0.0
+    position = (len(sorted_values) - 1) * pct
+    lower = int(position)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * (position - lower)
+
+def _summarize_cut(views_by_user, cut_at_by_user):
+    #por usuario: publicaciones distintas vistas hasta el momento del corte (inclusive)
+    counts = []
+    total_events = 0
+    for user_id, cut_at in cut_at_by_user.items():
+        seen = set()
+        for view in views_by_user.get(user_id, []):
+            if view['occurred_at'] <= cut_at:
+                seen.add(view['material_id'])
+                total_events += 1
+        counts.append(len(seen))
+
+    counts.sort()
+    return {
+        'mean': round(sum(counts) / len(counts), 4) if counts else 0.0,
+        'median': round(_percentile(counts, 0.5), 4),
+        'p75': round(_percentile(counts, 0.75), 4),
+        'total_users_analyzed': len(counts),
+        'total_events': total_events,
+    }
+
+def calculate_buyer_journey_metrics(listing_views, contacts, exchanges):
+    views_by_user = {}
+    for view in listing_views:
+        if view['user_id'] is None or view['material_id'] is None:
+            continue
+        views_by_user.setdefault(view['user_id'], []).append(view)
+
+    #corte 1: primer CONTACT_SELLER del usuario
+    first_contact_at = {}
+    for contact in contacts:
+        user_id = contact['user_id']
+        if user_id is None:
+            continue
+        if user_id not in first_contact_at or contact['occurred_at'] < first_contact_at[user_id]:
+            first_contact_at[user_id] = contact['occurred_at']
+
+    #corte 2: primer intercambio completado donde el usuario es comprador
+    first_exchange_at = {}
+    for exchange in exchanges:
+        buyer_id = exchange['buyer_id']
+        if buyer_id not in first_exchange_at or exchange['completed_at'] < first_exchange_at[buyer_id]:
+            first_exchange_at[buyer_id] = exchange['completed_at']
+
+    return {
+        'views_before_contact': _summarize_cut(views_by_user, first_contact_at),
+        'views_before_exchange': _summarize_cut(views_by_user, first_exchange_at),
+    }
+
+def buyer_journey_funnel(request):
+    events = AnalyticsEvent.objects.values('user_id', 'material_id', 'occurred_at')
+    listing_views = events.filter(event_type=AnalyticsEventType.LISTING_VIEW)
+    contacts = events.filter(event_type=AnalyticsEventType.CONTACT_SELLER)
+    exchanges = Exchange.objects.values('buyer_id', 'material_id', 'completed_at')
+
+    return JsonResponse(calculate_buyer_journey_metrics(listing_views, contacts, exchanges))
+
 # Business Question 8
 # TODO: implement
 

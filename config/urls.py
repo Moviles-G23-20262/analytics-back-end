@@ -24,8 +24,9 @@ def api_root(request):
         "endpoints": {
             "categories": "/analytics/categories/",
             "activity_times": "/analytics/activity-times/",
-            "wishlist_conversion": "/analytics/wishlist-conversion/"
-            "meeting_points": "/analytics/meeting-points/"
+            "wishlist_conversion": "/analytics/wishlist-conversion/",
+            "meeting_points": "/analytics/meeting-points/",
+            "buyer_journey_funnel": "/analytics/buyer-journey-funnel/"
         }
     })
 
