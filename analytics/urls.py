@@ -6,4 +6,5 @@ urlpatterns = [
     path('activity-times/', views.activity_by_time, name='activity-by-time'),
     path('wishlist-conversion/', views.wishlist_smart_match_conversion, name='wishlist-conversion'),
     path('meeting-points/', views.meeting_point_usage, name='meeting-point-usage'),
+    path('buyer-journey-funnel/', views.buyer_journey_funnel, name='buyer-journey-funnel'),
 ]
