@@ -47,6 +47,7 @@ class AnalyticsEventType(models.TextChoices):
     WISHLIST_REMOVE = 'WISHLIST_REMOVE', 'Wishlist Remove'
     NOTIFICATION_SENT = 'NOTIFICATION_SENT', 'Notification Sent'
     NOTIFICATION_OPENED = 'NOTIFICATION_OPENED', 'Notification Opened'
+    MEETING_CONFIRMED = 'MEETING_CONFIRMED', 'Meeting Confirmed'
 
 # ==========================================
 # MODELS

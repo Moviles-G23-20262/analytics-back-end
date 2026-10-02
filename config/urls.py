@@ -26,7 +26,8 @@ def api_root(request):
             "activity_times": "/analytics/activity-times/",
             "wishlist_conversion": "/analytics/wishlist-conversion/",
             "meeting_points": "/analytics/meeting-points/",
-            "buyer_journey_funnel": "/analytics/buyer-journey-funnel/"
+            "buyer_journey_funnel": "/analytics/buyer-journey-funnel/",
+            "chat_to_meeting_point": "/analytics/chat-to-meeting-point/"
         }
     })
 
