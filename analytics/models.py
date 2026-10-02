@@ -28,6 +28,11 @@ class NotificationType(models.TextChoices):
     SMART_MATCH = 'SMART_MATCH', 'Smart Match'
     OTHER = 'OTHER', 'Other'
 
+class ExchangeStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Pending'
+    COMPLETED = 'COMPLETED', 'Completed'
+    CANCELLED = 'CANCELLED', 'Cancelled'
+
 class MeetingZoneType(models.TextChoices):
     LIBRARY = 'LIBRARY', 'Library'
     STUDENT_CENTER = 'STUDENT_CENTER', 'Student Center'
@@ -130,7 +135,8 @@ class Exchange(models.Model):
     buyer = models.ForeignKey(User, on_delete=models.DO_NOTHING, db_column='buyerId', related_name='buyer_exchanges')
     seller = models.ForeignKey(User, on_delete=models.DO_NOTHING, db_column='sellerId', related_name='seller_exchanges')
     price = models.DecimalField(max_digits=10, decimal_places=2)
-    completed_at = models.DateTimeField(db_column='completedAt')
+    status = models.CharField(max_length=20, choices=ExchangeStatus.choices, default=ExchangeStatus.PENDING)
+    completed_at = models.DateTimeField(db_column='completedAt', null=True, blank=True)
     meeting_point = models.ForeignKey(MeetingPoint, on_delete=models.DO_NOTHING, db_column='meetingPointId', null=True, blank=True, related_name='exchanges')
     lat = models.FloatField(null=True, blank=True)
     lng = models.FloatField(null=True, blank=True)

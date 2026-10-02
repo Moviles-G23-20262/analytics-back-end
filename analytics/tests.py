@@ -39,3 +39,18 @@ class MeetingPointUsageMissingTablesTests(SimpleTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content), {'time_zone': 'America/Bogota', 'hour': 12, 'available': False, 'data': []})
+
+
+class MeetingPointUsageFilterTests(SimpleTestCase):
+    def test_counts_only_completed_exchanges_with_a_meeting_point(self):
+        query = MagicMock()
+        query.filter.return_value = query
+        query.annotate.return_value = query
+        query.values.return_value = query
+        query.order_by.return_value = query
+        query.__iter__.return_value = iter([])
+
+        with patch('analytics.views.Exchange.objects', query):
+            meeting_point_usage(RequestFactory().get('/analytics/meeting-points/'))
+
+        query.filter.assert_any_call(meeting_point__isnull=False, status='COMPLETED', completed_at__isnull=False)
