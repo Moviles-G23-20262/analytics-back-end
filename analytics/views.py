@@ -3,6 +3,7 @@ from django.shortcuts import render
 from django.http import JsonResponse
 import logging
 
+from django.db import DataError, ProgrammingError
 from django.db import ProgrammingError
 from django.db.models import Count, Func, IntegerField
 from django.db.models.functions import ExtractHour, ExtractWeekDay
@@ -184,6 +185,123 @@ def buyer_journey_funnel(request):
     exchanges = Exchange.objects.values('buyer_id', 'material_id', 'completed_at')
 
     return JsonResponse(calculate_buyer_journey_metrics(listing_views, contacts, exchanges))
+
+# Business Question 4
+
+def _describe(values):
+    ordered = sorted(values)
+    return {
+        'mean': round(sum(ordered) / len(ordered), 4) if ordered else 0.0,
+        'median': round(_percentile(ordered, 0.5), 4),
+        'p75': round(_percentile(ordered, 0.75), 4),
+        'min': round(ordered[0], 4) if ordered else 0.0,
+        'max': round(ordered[-1], 4) if ordered else 0.0,
+    }
+
+def map_exchanges_to_chat_rooms(chat_rooms, exchanges):
+    completed_at = {
+        (str(e['material_id']), str(e['buyer_id']), str(e['seller_id'])): e['completed_at']
+        for e in exchanges
+    }
+    agreed = {}
+    for room in chat_rooms:
+        key = (str(room['material_id']), str(room['buyer_id']), str(room['seller_id']))
+        if key in completed_at:
+            agreed[str(room['id'])] = completed_at[key]
+    return agreed
+
+def map_events_to_chat_rooms(events):
+    agreed = {}
+    for event in events:
+        metadata = event['metadata'] if isinstance(event['metadata'], dict) else {}
+        room_id = metadata.get('chatRoomId')
+        if not room_id:
+            continue
+        room_id = str(room_id)
+        if room_id not in agreed or event['occurred_at'] < agreed[room_id]:
+            agreed[room_id] = event['occurred_at']
+    return agreed
+
+def calculate_chat_to_meeting_metrics(chat_room_ids, messages, agreed_at_by_room):
+    sent_by_room = {}
+    for message in messages:
+        sent_by_room.setdefault(str(message['chat_room_id']), []).append(message['created_at'])
+
+    message_counts = []
+    minutes_to_agreement = []
+    without_agreement = 0   
+    without_messages = 0    
+
+    for room_id in (str(r) for r in chat_room_ids):
+        agreed_at = agreed_at_by_room.get(room_id)
+        if agreed_at is None:
+            without_agreement += 1
+            continue
+
+        sent = sorted(t for t in sent_by_room.get(room_id, []) if t <= agreed_at)
+        if not sent:
+            without_messages += 1
+            continue
+        message_counts.append(len(sent))
+
+        minutes_to_agreement.append((agreed_at - sent[0]).total_seconds() / 60)
+
+    histogram = {}
+    for count in message_counts:
+        histogram[count] = histogram.get(count, 0) + 1
+
+    ordered = sorted(minutes_to_agreement)
+    return {
+        'conversations_analyzed': len(message_counts),
+        'conversations_without_agreement': without_agreement,
+        'conversations_without_messages': without_messages,
+        'messages_before_agreement': {
+            **_describe(message_counts),
+
+            'histogram': [{'messages': n, 'conversations': histogram[n]} for n in sorted(histogram)],
+        },
+        'minutes_to_agreement': {
+            **_describe(minutes_to_agreement),
+
+            'boxplot': {
+                'min': round(ordered[0], 4) if ordered else 0.0,
+                'q1': round(_percentile(ordered, 0.25), 4),
+                'median': round(_percentile(ordered, 0.5), 4),
+                'q3': round(_percentile(ordered, 0.75), 4),
+                'max': round(ordered[-1], 4) if ordered else 0.0,
+            },
+        },
+    }
+
+def chat_to_meeting_point(request):
+    chat_rooms = list(ChatRoom.objects.values('id', 'material_id', 'buyer_id', 'seller_id'))
+    messages = Message.objects.values('chat_room_id', 'created_at')
+
+    try:
+        exchanges = Exchange.objects.filter(meeting_point__isnull=False).values(
+            'material_id', 'buyer_id', 'seller_id', 'completed_at')
+        from_exchanges = map_exchanges_to_chat_rooms(chat_rooms, exchanges)
+    except ProgrammingError:
+        logger.warning('Exchange.meetingPointId is missing; apply the BQ12 Prisma migration')
+        from_exchanges = {}
+
+    try:
+        events = AnalyticsEvent.objects.filter(
+            event_type=AnalyticsEventType.MEETING_CONFIRMED).values('metadata', 'occurred_at')
+        from_events = map_events_to_chat_rooms(events)
+    except (DataError, ProgrammingError):
+        logger.warning('MEETING_CONFIRMED is not in the AnalyticsEventType enum yet; using exchanges only')
+        from_events = {}
+
+    agreed_at_by_room = {**from_exchanges, **from_events}  #the event wins over the fallback
+    result = calculate_chat_to_meeting_metrics(
+        [room['id'] for room in chat_rooms], messages, agreed_at_by_room)
+    result['agreement_sources'] = {
+        'meeting_confirmed_event': len(from_events),
+        'exchange_completed_at': len(set(from_exchanges) - set(from_events)),
+    }
+    return JsonResponse(result)
+
 
 # Business Question 8
 # TODO: implement
