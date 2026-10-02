@@ -8,7 +8,7 @@ from django.db.models import Count, Func, IntegerField
 from django.db.models.functions import ExtractHour, ExtractWeekDay
 from .models import Material, AnalyticsEvent, AnalyticsEventType
 from .models import Exchange, Notification, NotificationType, WishlistItem
-from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange
+from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, ExchangeStatus
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
 
@@ -210,7 +210,11 @@ def meeting_point_usage(request):
             return JsonResponse({'error': 'hour must be an integer between 0 and 23'}, status=400)
         hour = int(hour)
 
-    exchanges = Exchange.objects.filter(meeting_point__isnull=False).annotate(hour=CampusHour('completed_at'))
+    exchanges = (
+        Exchange.objects
+        .filter(meeting_point__isnull=False, status=ExchangeStatus.COMPLETED, completed_at__isnull=False)
+        .annotate(hour=CampusHour('completed_at'))
+    )
     if hour is not None:
         exchanges = exchanges.filter(hour=hour)
 
