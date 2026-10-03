@@ -1,15 +1,21 @@
+from zoneinfo import ZoneInfo
+
+from django.http import Http404
 from django.shortcuts import render
+from django.urls import reverse
+from django.utils import timezone
 
 from django.http import JsonResponse
 import logging
 
 from django.db import DataError, ProgrammingError
 from django.db import ProgrammingError
-from django.db.models import Count, Func, IntegerField
+from django.db.models import Count, Func, IntegerField, Q
 from django.db.models.functions import ExtractHour, ExtractWeekDay
 from .models import Material, AnalyticsEvent, AnalyticsEventType
 from .models import Exchange, Notification, NotificationType, WishlistItem
 from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, ExchangeStatus
+from .models import ChatRoom, Message
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
 
@@ -52,7 +58,7 @@ def category_performance(request):
         .values('category')
         .annotate(
             total_listings=Count('id', distinct=True),
-            completed_exchanges=Count('exchange__id', distinct=True)
+            completed_exchanges=Count('exchange__id', filter=Q(exchange__status=ExchangeStatus.COMPLETED), distinct=True)
         )
         .order_by('-completed_exchanges', '-total_listings')
     )
@@ -361,3 +367,73 @@ def meeting_point_usage(request):
         return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'hour': hour, 'available': False, 'data': []})
 
     return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'hour': hour, 'available': True, 'data': data})
+
+
+# Dashboard
+# One entry per implemented business question; the sidebar, the overview and each question page read from here.
+DASHBOARD_QUESTIONS = [
+    {
+        'number': 2,
+        'title': 'Buyer journey funnel',
+        'question': 'How many listings does a buyer open before contacting a seller, and how many before completing an exchange?',
+        'endpoint': 'buyer-journey-funnel',
+    },
+    {
+        'number': 4,
+        'title': 'Chat to meeting point',
+        'question': 'How many messages do a buyer and a seller exchange in the app chat before they agree on a meeting point, and how long does this conversation take?',
+        'endpoint': 'chat-to-meeting-point',
+    },
+    {
+        'number': 5,
+        'title': 'Activity by time',
+        'question': 'At what time of the day and which days of the week do students publish and browse the most?',
+        'endpoint': 'activity-by-time',
+    },
+    {
+        'number': 6,
+        'title': 'Category performance',
+        'question': 'Which categories of items generate the most listings and the most completed exchanges?',
+        'endpoint': 'category-performance',
+    },
+    {
+        'number': 7,
+        'title': 'Wishlist and Smart Match',
+        'question': 'How many buyers save items in the wishlist, and how many of those saved items end in a purchase after a Smart matching notification?',
+        'endpoint': 'wishlist-conversion',
+    },
+    {
+        'number': 12,
+        'title': 'Meeting points',
+        'question': 'Which specific campus locations (visualized as a heat map) are most frequently used for item exchanges, and how does this density shift during different hours of the day?',
+        'endpoint': 'meeting-point-usage',
+    },
+]
+
+
+def _dashboard_context(current=None):
+    questions = [
+        {
+            **q,
+            'url': reverse('dashboard-question', args=[q['number']]),
+            'endpoint_url': reverse(q['endpoint']),
+        }
+        for q in DASHBOARD_QUESTIONS
+    ]
+    offset = timezone.now().astimezone(ZoneInfo(CAMPUS_TIME_ZONE)).utcoffset().total_seconds() / 3600
+    return {
+        'questions': questions,
+        'current': next((q for q in questions if current and q['number'] == current), None),
+        'campus_time_zone': CAMPUS_TIME_ZONE,
+        'campus_utc_offset_hours': int(offset),
+    }
+
+
+def dashboard(request):
+    return render(request, 'analytics/dashboard/index.html', _dashboard_context())
+
+
+def dashboard_question(request, number):
+    if number not in {q['number'] for q in DASHBOARD_QUESTIONS}:
+        raise Http404('No dashboard for this business question')
+    return render(request, f'analytics/dashboard/bq{number}.html', _dashboard_context(number))

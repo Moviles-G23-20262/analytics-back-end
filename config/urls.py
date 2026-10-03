@@ -18,9 +18,12 @@ Including another URLconf
 from django.http import JsonResponse
 from django.urls import include, path
 
+from analytics.views import dashboard, dashboard_question
+
 def api_root(request):
     return JsonResponse({
         "message": "Welcome to the API",
+        "dashboard": "/dash-board/",
         "endpoints": {
             "categories": "/analytics/categories/",
             "activity_times": "/analytics/activity-times/",
@@ -34,5 +37,7 @@ def api_root(request):
 urlpatterns = [
     # path('admin/', admin.site.urls),
     path('', api_root),  # Maps default URL to api_root
+    path('dash-board/', dashboard, name='dashboard'),
+    path('dash-board/bq<int:number>/', dashboard_question, name='dashboard-question'),
     path('analytics/', include('analytics.urls')),
 ]

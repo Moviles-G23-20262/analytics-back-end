@@ -1,0 +1,34 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}Campus Swap Dashboard{% endblock %}
+{% block content %}
+<header class="hero">
+  <p class="eyebrow">Campus Swap analytics</p>
+  <h1>Business questions answered with live marketplace data</h1>
+  <p class="meta">Pick a question to see the full analysis. Each card shows the current answer.</p>
+</header>
+<div class="overview">
+  {% for q in questions %}
+  <a class="card q-card" href="{{ q.url }}">
+    <span class="num">Business question {{ q.number }}</span>
+    <span class="q">{{ q.question }}</span>
+    <span class="a" id="headline-{{ q.number }}">Loading…</span>
+    <span class="go">Open analysis →</span>
+  </a>
+  {% endfor %}
+</div>
+<p class="note" style="margin-top:24px;color:var(--text-muted);font-size:12px">Crashes and device telemetry (BQ1) are answered in the Firebase Crashlytics console. Other questions are not implemented yet.</p>
+{% endblock %}
+{% block scripts %}
+<script>
+QUESTIONS.forEach(async q => {
+  const node = el('headline-' + q.number);
+  try {
+    const response = await fetch(q.endpoint_url);
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    node.innerHTML = HEADLINES[q.number](await response.json());
+  } catch (error) {
+    node.textContent = 'Could not load (' + error.message + ').';
+  }
+});
+</script>
+{% endblock %}

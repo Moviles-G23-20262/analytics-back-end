@@ -1,0 +1,171 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ5 · Activity by time{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="controls">
+  <span>Time zone</span>
+  <div class="seg" role="group" aria-label="Time zone">
+    <button type="button" data-tz="campus" aria-pressed="true" id="tz-campus">Campus time</button>
+    <button type="button" data-tz="utc" aria-pressed="false">UTC</button>
+  </div>
+  <span style="margin-left:12px">Charts show</span>
+  <div class="seg" role="group" aria-label="Chart values">
+    <button type="button" data-mode="share" aria-pressed="true">Share of each series</button>
+    <button type="button" data-mode="raw" aria-pressed="false">Raw counts</button>
+  </div>
+</div>
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">When are students active?</h2>
+<div class="stack">
+  <section class="card">
+    <h2>Listings published, by day and hour</h2>
+    <p class="sub">Each cell is the number of listings published in that hour of that weekday. Hover for the value.</p>
+    <div class="heat-wrap" id="heat-pub"></div>
+  </section>
+  <section class="card">
+    <h2>Browsing, by day and hour</h2>
+    <p class="sub">Listing views and searches. Darker means more activity.</p>
+    <div class="heat-wrap" id="heat-brw"></div>
+  </section>
+</div>
+
+<div class="grid2" style="margin-top:16px">
+  <section class="card">
+    <h2>Hour of day</h2>
+    <p class="sub" id="sub-hour"></p>
+    <div class="chart-box"><canvas id="c-hour" role="img" aria-label="Publishing and browsing by hour of day"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Day of week</h2>
+    <p class="sub" id="sub-day"></p>
+    <div class="chart-box"><canvas id="c-day" role="img" aria-label="Publishing and browsing by day of week"></canvas></div>
+  </section>
+</div>
+<section class="card" style="margin-top:16px">
+  <h2>Part of the day</h2>
+  <p class="sub">Share of each series that falls in each part of the day.</p>
+  <div class="chart-box"><canvas id="c-part" role="img" aria-label="Publishing and browsing by part of the day"></canvas></div>
+</section>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li><strong>Publishing</strong> is the creation time of each listing. <strong>Browsing</strong> is every <code>LISTING_VIEW</code> and <code>SEARCH</code> event.</li>
+    <li>The endpoint groups by weekday and hour in <strong>UTC</strong>. The dashboard shifts the hour (and the weekday across midnight) by the campus offset, taken from <code>{{ campus_time_zone }}</code>. Choose UTC to see the data exactly as the endpoint returns it.</li>
+    <li>There are far more browsing events than published listings, so the default view shows each series as a share of its own total. This compares <em>when</em> activity happens, not <em>how much</em>. Switch to raw counts to see volumes.</li>
+    <li>Parts of the day: night 00:00–05:59, morning 06:00–11:59, afternoon 12:00–17:59, evening 18:00–23:59.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const view = { tz: 'campus', mode: 'share' };
+const PARTS = [['Night', 0, 5], ['Morning', 6, 11], ['Afternoon', 12, 17], ['Evening', 18, 23]];
+const shareOf = counts => { const t = total(counts); return counts.map(v => (t ? +(v / t * 100).toFixed(2) : 0)); };
+let redraw = () => {};
+
+function render(d) {
+  const offset = view.tz === 'campus' ? CAMPUS_OFFSET : 0;
+  const zone = view.tz === 'campus' ? campusLabel() : 'UTC';
+  const g = activityGrids(d, offset);
+  const hours = { pub: perHour(g.pub), brw: perHour(g.brw) };
+  const days = { pub: perDay(g.pub), brw: perDay(g.brw) };
+  const parts = {
+    pub: PARTS.map(([, from, to]) => total(hours.pub.slice(from, to + 1))),
+    brw: PARTS.map(([, from, to]) => total(hours.brw.slice(from, to + 1))),
+  };
+  const nPub = total(hours.pub), nBrw = total(hours.brw);
+  const share = view.mode === 'share';
+  const val = (counts) => (share ? shareOf(counts) : counts);
+  setAnswer(HEADLINES[5](d));
+
+  el('tz-campus').textContent = campusLabel();
+  tiles('tiles', [
+    { label: 'Listings published', value: nf.format(nPub) },
+    { label: 'Browsing events', value: nf.format(nBrw) },
+    { label: 'Publishing peak', value: nPub ? hourLabel(argMax(hours.pub)) : '–', hint: nPub ? FULL_DAYS[argMax(days.pub)] : '' },
+    { label: 'Browsing peak', value: nBrw ? hourLabel(argMax(hours.brw)) : '–', hint: nBrw ? FULL_DAYS[argMax(days.brw)] : '' },
+  ]);
+
+  heatmap('heat-pub', {
+    rowLabels: DAYS, colLabels: HOURS.map(h => String(h).padStart(2, '0')), colEvery: 1, color: series(1), matrix: g.pub,
+    tip: (r, c, v) => `${FULL_DAYS[r]} ${hourLabel(c)}: ${nf.format(v)} listings published`,
+  });
+  heatmap('heat-brw', {
+    rowLabels: DAYS, colLabels: HOURS.map(h => String(h).padStart(2, '0')), colEvery: 1, color: series(2), matrix: g.brw,
+    tip: (r, c, v) => `${FULL_DAYS[r]} ${hourLabel(c)}: ${nf.format(v)} browsing events`,
+  });
+
+  const sub = `${zone}. ` + (share ? 'Each series as a share of its own total.' : 'Raw counts; the two series have different volumes.');
+  el('sub-hour').textContent = sub;
+  el('sub-day').textContent = sub;
+  const yAxis = share ? { ticks: { callback: v => v + '%' } } : { ticks: { precision: 0 } };
+  const tooltip = (raw) => ({ callbacks: { label: c => `${c.dataset.label}: ${share ? fmtPct(c.parsed.y) + ' (' + nf.format(raw[c.datasetIndex][c.dataIndex]) + ')' : nf.format(c.parsed.y)}` } });
+  const opts = raw => baseOptions({ plugins: { tooltip: tooltip(raw) }, scales: axes({ y: yAxis }) });
+
+  const rawHour = [hours.pub, hours.brw], rawDay = [days.pub, days.brw], rawPart = [parts.pub, parts.brw];
+  draw('c-hour', {
+    type: 'line',
+    data: { labels: HOURS.map(hourLabel), datasets: [line('Listings published', val(hours.pub), 1), line('Browsing', val(hours.brw), 2)] },
+    options: opts(rawHour),
+  });
+  draw('c-day', {
+    type: 'bar',
+    data: { labels: DAYS, datasets: [bar('Listings published', val(days.pub), 1), bar('Browsing', val(days.brw), 2)] },
+    options: opts(rawDay),
+  });
+  draw('c-part', {
+    type: 'bar',
+    data: {
+      labels: PARTS.map(([name, from, to]) => `${name} (${hourLabel(from)}–${hourLabel(to).replace(':00', ':59')})`),
+      datasets: [bar('Listings published', shareOf(parts.pub), 1), bar('Browsing', shareOf(parts.brw), 2)],
+    },
+    options: baseOptions({
+      plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtPct(c.parsed.y)} (${nf.format(rawPart[c.datasetIndex][c.dataIndex])})` } } },
+      scales: axes({ y: { ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  const list = [];
+  if (nPub || nBrw) {
+    if (nPub) list.push(`Listings are published most at ${strong(hourLabel(argMax(hours.pub)))} (${view.tz === 'campus' ? campusShort() : 'UTC'}) and most on ${strong(FULL_DAYS[argMax(days.pub)])}.`);
+    if (nBrw) list.push(`Browsing peaks at ${strong(hourLabel(argMax(hours.brw)))} and is busiest on ${strong(FULL_DAYS[argMax(days.brw)])}.`);
+    if (nPub && nBrw) {
+      const gap = (argMax(hours.brw) - argMax(hours.pub) + 36) % 24 - 12;
+      list.push(gap === 0 ? 'Publishing and browsing peak in the same hour, so new listings meet buyers right away.'
+        : `Browsing peaks ${strong(Math.abs(gap) + ' h ' + (gap > 0 ? 'after' : 'before'))} publishing.`);
+    }
+    PARTS.forEach(([name, from, to], i) => {
+      if (nBrw && i === argMax(parts.brw)) list.push(`${strong(fmtPct(ratioPct(parts.brw[i], nBrw)))} of browsing happens in the ${name.toLowerCase()} (${hourLabel(from)}–${hourLabel(to).replace(':00', ':59')}).`);
+      if (nPub && i === argMax(parts.pub)) list.push(`${strong(fmtPct(ratioPct(parts.pub[i], nPub)))} of listings are published in the ${name.toLowerCase()}.`);
+    });
+    const weekend = c => c[0] + c[6];
+    list.push(`Weekends (Saturday and Sunday) hold ${strong(fmtPct(ratioPct(weekend(days.pub), nPub)))} of publishing and ${strong(fmtPct(ratioPct(weekend(days.brw), nBrw)))} of browsing. An even spread would be 28.6%.`);
+    if (nPub < 100 || nBrw < 100) list.push('Few events so far: treat these patterns as indicative.');
+  }
+  insights('insights', list);
+
+  table('t-data', ['Hour (' + zone + ')', 'Published', 'Browsing'], HOURS.map(h => [hourLabel(h), hours.pub[h], hours.brw[h]]));
+}
+
+document.querySelectorAll('[data-tz]').forEach(b => b.addEventListener('click', () => {
+  view.tz = b.dataset.tz;
+  document.querySelectorAll('[data-tz]').forEach(x => x.setAttribute('aria-pressed', x === b));
+  redraw();
+}));
+document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
+  view.mode = b.dataset.mode;
+  document.querySelectorAll('[data-mode]').forEach(x => x.setAttribute('aria-pressed', x === b));
+  redraw();
+}));
+start(render).then(fn => { redraw = fn; });
+</script>
+{% endblock %}

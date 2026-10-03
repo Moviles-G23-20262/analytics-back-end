@@ -1,0 +1,10 @@
+<header class="hero">
+  <p class="eyebrow">Business question {{ current.number }}</p>
+  <h1>{{ current.question }}</h1>
+  <p class="meta">Source: <a href="{{ current.endpoint_url }}"><code>{{ current.endpoint_url }}</code></a> (raw JSON)</p>
+</header>
+<section class="answer" aria-live="polite">
+  <p class="label">Answer from the data</p>
+  <p class="text" id="answer-text">Loading…</p>
+</section>
+<p class="status" id="status"></p>

@@ -1,0 +1,93 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ2 · Buyer journey funnel{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">The journey</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Distinct listings viewed before each step</h2>
+    <p class="sub">Mean, median and 75th percentile across buyers. The median is the typical buyer.</p>
+    <div class="chart-box"><canvas id="c-views" role="img" aria-label="Distinct listings viewed before first contact and before first exchange"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Buyers reaching each step</h2>
+    <p class="sub">Users with at least one contact, and buyers with at least one completed exchange.</p>
+    <div class="chart-box"><canvas id="c-stages" role="img" aria-label="Buyers with a recorded contact and buyers with a completed exchange"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>A view is a <code>LISTING_VIEW</code> analytics event. Only <strong>distinct</strong> listings count, so re-opening the same listing does not add to the number.</li>
+    <li><strong>Before contact</strong> cuts each buyer's views at their first <code>CONTACT_SELLER</code> event. <strong>Before exchange</strong> cuts at the buyer's first completed exchange.</li>
+    <li>Views are counted up to and including the cut. Buyers with no views before the cut count as 0, which pulls the averages down.</li>
+    <li>Both steps analyse different groups of users, so the second is not necessarily a subset of the first.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  const a = d.views_before_contact, b = d.views_before_exchange;
+  setAnswer(HEADLINES[2](d));
+
+  tiles('tiles', [
+    { label: 'Median views before contact', value: nf.format(a.median), hint: 'mean ' + nf.format(a.mean) },
+    { label: 'Median views before exchange', value: nf.format(b.median), hint: 'mean ' + nf.format(b.mean) },
+    { label: 'Buyers who contacted a seller', value: nf.format(a.total_users_analyzed) },
+    { label: 'Buyers with a completed exchange', value: nf.format(b.total_users_analyzed) },
+  ]);
+
+  draw('c-views', {
+    type: 'bar',
+    data: {
+      labels: ['Mean', 'Median', '75th percentile'],
+      datasets: [bar('Before first contact', [a.mean, a.median, a.p75], 1), bar('Before first exchange', [b.mean, b.median, b.p75], 2)],
+    },
+    options: baseOptions({ scales: axes({ y: { title: { display: true, text: 'Distinct listings viewed' } } }) }),
+  });
+  draw('c-stages', {
+    type: 'bar',
+    data: {
+      labels: ['Contacted a seller', 'Completed an exchange'],
+      datasets: [bar('Buyers', [a.total_users_analyzed, b.total_users_analyzed], 1)],
+    },
+    options: baseOptions({ legend: false, horizontal: true, counts: true }),
+  });
+
+  const list = [];
+  if (a.total_users_analyzed) {
+    list.push(a.mean > a.median * 1.2
+      ? `The mean (${strong(nf.format(a.mean))}) is above the median (${strong(nf.format(a.median))}) before contact: a minority of buyers browse far more than the typical buyer.`
+      : `The mean (${strong(nf.format(a.mean))}) and median (${strong(nf.format(a.median))}) before contact are close, so browsing depth is fairly even across buyers.`);
+    list.push(`Three in four buyers contact a seller after viewing at most ${strong(nf.format(a.p75))} distinct listings.`);
+    const distinct = a.mean * a.total_users_analyzed;
+    if (distinct > 0) list.push(`Before contacting a seller, each distinct listing is opened ${strong(nf.format(a.total_events / distinct))} times on average (${nf.format(a.total_events)} view events in total), so buyers return to listings they like.`);
+  }
+  if (a.total_users_analyzed && b.total_users_analyzed) {
+    const extra = b.median - a.median;
+    list.push(extra > 0
+      ? `Completing an exchange takes ${strong(nf.format(extra))} more distinct listing views than the first contact at the median.`
+      : `The median buyer views no more listings before completing an exchange than before contacting a seller.`);
+    list.push(`${strong(nf.format(a.total_users_analyzed))} buyers have contacted a seller, while ${strong(nf.format(b.total_users_analyzed))} have completed an exchange.`);
+  }
+  if (a.total_users_analyzed && a.total_users_analyzed < 30) list.push(`Small sample (${plural(a.total_users_analyzed, 'buyer')} contacted a seller): treat these numbers as indicative.`);
+  insights('insights', list);
+
+  table('t-data', ['Cut', 'Mean', 'Median', 'P75', 'Users analysed', 'View events'], [
+    ['Before first contact', a.mean, a.median, a.p75, a.total_users_analyzed, a.total_events],
+    ['Before first exchange', b.mean, b.median, b.p75, b.total_users_analyzed, b.total_events],
+  ]);
+}
+start(render);
+</script>
+{% endblock %}

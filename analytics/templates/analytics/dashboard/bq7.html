@@ -1,0 +1,109 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ7 · Wishlist and Smart Match{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">From wishlist to purchase</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Wishlist funnel</h2>
+    <p class="sub">Saved items, those that received a Smart Match, and those bought after that notification.</p>
+    <div class="chart-box"><canvas id="c-funnel" role="img" aria-label="Wishlist funnel: saved items, Smart Match received, bought after Smart Match"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Do Smart Matches lead to purchases?</h2>
+    <p class="sub">Purchase rate of wishlist items, with and without a Smart Match.</p>
+    <div class="chart-box"><canvas id="c-lift" role="img" aria-label="Purchase rate of wishlist items with and without a Smart Match"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>A <strong>wishlist item</strong> is one buyer saving one listing. <strong>Buyers</strong> counts distinct users with at least one saved item.</li>
+    <li>An item <strong>received a Smart Match</strong> when that buyer got a <code>SMART_MATCH</code> notification for that listing. The first one is the reference time.</li>
+    <li><strong>Bought after the Smart Match</strong>: the same buyer completed the exchange for that listing after the notification. Conversion rate is this count divided by the items that received a Smart Match.</li>
+    <li><strong>Bought without a Smart Match</strong>: the item was purchased and never received one.</li>
+    <li>The comparison between the two rates is observational. Items that get a Smart Match may differ from the others in ways this data does not capture, so it does not prove that the notification caused the purchase.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  const noMatch = d.wishlist_items - d.items_with_smart_match;
+  const rateMatch = ratioPct(d.purchased_after_smart_match, d.items_with_smart_match);
+  const rateNoMatch = ratioPct(d.purchased_without_smart_match, noMatch);
+  const purchases = d.purchased_after_smart_match + d.purchased_without_smart_match;
+  setAnswer(HEADLINES[7](d));
+
+  tiles('tiles', [
+    { label: 'Buyers with a wishlist', value: nf.format(d.buyers_with_wishlist), hint: nf1.format(d.buyers_with_wishlist ? d.wishlist_items / d.buyers_with_wishlist : 0) + ' items each' },
+    { label: 'Wishlist items', value: nf.format(d.wishlist_items) },
+    { label: 'Received a Smart Match', value: fmtPct(ratioPct(d.items_with_smart_match, d.wishlist_items)), hint: nf.format(d.items_with_smart_match) + ' items' },
+    { label: 'Conversion after Smart Match', value: fmtPct(d.conversion_rate * 100), hint: `${nf.format(d.purchased_after_smart_match)} of ${nf.format(d.items_with_smart_match)}` },
+  ]);
+
+  draw('c-funnel', {
+    type: 'bar',
+    data: {
+      labels: ['Saved in a wishlist', 'Received a Smart Match', 'Bought after the Smart Match'],
+      datasets: [bar('Wishlist items', [d.wishlist_items, d.items_with_smart_match, d.purchased_after_smart_match], 1)],
+    },
+    options: baseOptions({
+      legend: false,
+      horizontal: true,
+      counts: true,
+      plugins: { tooltip: { callbacks: { afterLabel: c => c.dataIndex ? fmtPct(ratioPct(c.parsed.x, [d.wishlist_items, d.items_with_smart_match][c.dataIndex - 1])) + ' of the previous step' : '' } } },
+    }),
+  });
+
+  draw('c-lift', {
+    type: 'bar',
+    data: {
+      labels: ['With a Smart Match', 'Without a Smart Match'],
+      datasets: [bar('Purchase rate', [+rateMatch.toFixed(1), +rateNoMatch.toFixed(1)], 1, { backgroundColor: [series(1), series(2)] })],
+    },
+    options: baseOptions({
+      legend: false,
+      plugins: { tooltip: { callbacks: {
+        label: c => fmtPct(c.parsed.y),
+        afterLabel: c => c.dataIndex ? `${nf.format(d.purchased_without_smart_match)} of ${nf.format(noMatch)} items` : `${nf.format(d.purchased_after_smart_match)} of ${nf.format(d.items_with_smart_match)} items`,
+      } } },
+      scales: axes({ y: { ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  const list = [];
+  if (d.wishlist_items) {
+    list.push(`${strong(nf.format(d.buyers_with_wishlist))} buyers saved ${strong(nf.format(d.wishlist_items))} items, ${nf1.format(d.wishlist_items / d.buyers_with_wishlist)} per buyer.`);
+    list.push(`${strong(fmtPct(ratioPct(d.items_with_smart_match, d.wishlist_items)))} of saved items received a Smart Match, so ${strong(nf.format(noMatch))} saved items never triggered one.`);
+  }
+  if (d.items_with_smart_match) {
+    list.push(`After a Smart Match, ${strong(fmtPct(rateMatch))} of the items were bought (${nf.format(d.purchased_after_smart_match)} of ${nf.format(d.items_with_smart_match)}).`);
+    if (noMatch > 0 && rateNoMatch > 0) {
+      list.push(`Items without a Smart Match were bought at ${strong(fmtPct(rateNoMatch))}, so items with one convert ${strong(nf1.format(rateMatch / rateNoMatch) + '×')} as often. This is a correlation, not proof that the notification caused the sale.`);
+    } else if (noMatch > 0) {
+      list.push('No item without a Smart Match has been bought yet, so there is nothing to compare against.');
+    }
+  }
+  if (purchases) list.push(`${strong(fmtPct(ratioPct(d.purchased_after_smart_match, purchases)))} of wishlist purchases came after a Smart Match (${nf.format(d.purchased_after_smart_match)} of ${nf.format(purchases)}).`);
+  if (d.items_with_smart_match && d.items_with_smart_match < 30) list.push(`Small sample (${d.items_with_smart_match} items with a Smart Match): treat these rates as indicative.`);
+  insights('insights', list);
+
+  table('t-data', ['Measure', 'Value'], [
+    ['Buyers with a wishlist', d.buyers_with_wishlist], ['Wishlist items', d.wishlist_items],
+    ['Items with a Smart Match', d.items_with_smart_match], ['Purchased after the Smart Match', d.purchased_after_smart_match],
+    ['Purchased without a Smart Match', d.purchased_without_smart_match], ['Conversion rate', d.conversion_rate],
+  ]);
+}
+start(render);
+</script>
+{% endblock %}

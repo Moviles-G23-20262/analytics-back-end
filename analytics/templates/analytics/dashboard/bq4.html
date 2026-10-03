@@ -1,0 +1,146 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ4 · Chat to meeting point{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">How many messages?</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Messages before agreement</h2>
+    <p class="sub">Number of conversations by how many messages were sent before the meeting point was agreed.</p>
+    <div class="chart-box"><canvas id="c-hist" role="img" aria-label="Histogram of messages sent before agreement"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Share of agreements reached within N messages</h2>
+    <p class="sub">Cumulative share of conversations. Read it as: by message N, this share had already agreed.</p>
+    <div class="chart-box"><canvas id="c-cum" role="img" aria-label="Cumulative share of agreements by number of messages"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">How long does it take?</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Time to agreement</h2>
+    <p class="sub">From the first message to the agreement. The thin bar spans min to max, the thick bar the middle 50% of conversations.</p>
+    <div class="chart-box short"><canvas id="c-box" role="img" aria-label="Range of minutes to agreement"></canvas></div>
+    <div class="tiles" id="time-tiles" style="margin-top:12px"></div>
+  </section>
+  <section class="card">
+    <h2>What happened to the conversations</h2>
+    <p class="sub">Every chat room, by outcome.</p>
+    <div class="chart-box short" style="height:200px"><canvas id="c-outcome" role="img" aria-label="Conversations by outcome"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>A conversation is a chat room. It <strong>agrees</strong> on a meeting point when a <code>MEETING_CONFIRMED</code> event exists for it. If that event type is not recorded yet, a completed exchange with a meeting point between the same buyer, seller and listing is used instead.</li>
+    <li>Messages are counted from the first message up to the agreement time. Time is measured from the first message to the agreement.</li>
+    <li>Conversations that never agreed are reported separately and excluded from the message and time statistics.</li>
+    <li>When the fallback is used, the agreement time is the exchange completion time, which can be later than the real agreement. In that case the times above are an upper bound.</li>
+  </ul>
+  <div class="tiles" id="source-tiles" style="margin-top:12px"></div>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  const msgs = d.messages_before_agreement, mins = d.minutes_to_agreement, box = mins.boxplot;
+  const agreed = d.conversations_analyzed + d.conversations_without_messages;
+  const everyChat = agreed + d.conversations_without_agreement;
+  const sources = d.agreement_sources || { meeting_confirmed_event: 0, exchange_completed_at: 0 };
+  setAnswer(HEADLINES[4](d));
+
+  tiles('tiles', [
+    { label: 'Conversations analysed', value: nf.format(d.conversations_analyzed), hint: 'agreed after at least 1 message' },
+    { label: 'Reached an agreement', value: fmtPct(ratioPct(agreed, everyChat)), hint: `${nf.format(agreed)} of ${nf.format(everyChat)} chats` },
+    { label: 'Median messages', value: nf.format(msgs.median), hint: 'P75 ' + nf.format(msgs.p75) },
+    { label: 'Median time to agree', value: fmtMinutes(mins.median), hint: 'P75 ' + fmtMinutes(mins.p75) },
+  ]);
+
+  draw('c-hist', {
+    type: 'bar',
+    data: { labels: msgs.histogram.map(h => h.messages), datasets: [bar('Conversations', msgs.histogram.map(h => h.conversations), 1, { barPercentage: 0.9, categoryPercentage: 0.9 })] },
+    options: baseOptions({
+      legend: false,
+      scales: axes({ counts: true, x: { title: { display: true, text: 'Messages sent before agreement' } }, y: { title: { display: true, text: 'Conversations' } } }),
+    }),
+  });
+
+  let running = 0;
+  const cumulative = msgs.histogram.map(h => { running += h.conversations; return +ratioPct(running, d.conversations_analyzed).toFixed(1); });
+  draw('c-cum', {
+    type: 'line',
+    data: { labels: msgs.histogram.map(h => h.messages), datasets: [line('Agreed by this message', cumulative, 1, { stepped: true, fill: false })] },
+    options: baseOptions({
+      legend: false,
+      plugins: { tooltip: { callbacks: { label: c => `${fmtPct(c.parsed.y)} had agreed by message ${c.label}` } } },
+      scales: axes({ x: { title: { display: true, text: 'Messages sent' } }, y: { max: 100, ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  draw('c-box', {
+    type: 'bar',
+    data: {
+      labels: [''],
+      datasets: [
+        { label: 'Min to max', data: [[box.min, box.max]], backgroundColor: series(1) + '66', borderRadius: 4, barPercentage: 0.25, categoryPercentage: 1, grouped: false, order: 2 },
+        { label: 'Q1 to Q3', data: [[box.q1, box.q3]], backgroundColor: series(1), borderRadius: 4, barPercentage: 0.7, categoryPercentage: 1, grouped: false, order: 1 },
+      ],
+    },
+    options: baseOptions({
+      horizontal: true,
+      interaction: { mode: 'nearest', intersect: true },
+      plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtMinutes(c.raw[0])} to ${fmtMinutes(c.raw[1])}` } } },
+      scales: axes({ horizontal: true, x: { title: { display: true, text: 'Minutes' } }, y: { display: false } }),
+    }),
+  });
+  tiles('time-tiles', [
+    { label: 'Fastest', value: fmtMinutes(box.min) },
+    { label: 'Median', value: fmtMinutes(box.median) },
+    { label: 'Slowest', value: fmtMinutes(box.max) },
+  ]);
+
+  draw('c-outcome', {
+    type: 'bar',
+    data: {
+      labels: ['Agreed after messages', 'Agreed with no earlier message', 'No agreement'],
+      datasets: [bar('Conversations', [d.conversations_analyzed, d.conversations_without_messages, d.conversations_without_agreement], 1)],
+    },
+    options: baseOptions({ legend: false, horizontal: true, counts: true }),
+  });
+
+  const list = [];
+  if (everyChat) list.push(`${strong(fmtPct(ratioPct(agreed, everyChat)))} of chats end with an agreed meeting point (${nf.format(agreed)} of ${nf.format(everyChat)}). The other ${strong(nf.format(d.conversations_without_agreement))} never reach one.`);
+  if (d.conversations_analyzed) {
+    list.push(`Half of the agreements need ${strong(nf.format(msgs.median))} messages or fewer, and 3 in 4 need ${strong(nf.format(msgs.p75))} or fewer. The longest chat took ${strong(nf.format(msgs.max))}.`);
+    list.push(`Half of the buyers and sellers agree within ${strong(fmtMinutes(mins.median))}. One in four takes longer than ${strong(fmtMinutes(mins.p75))}, and the slowest took ${strong(fmtMinutes(mins.max))}.`);
+    if (mins.mean > mins.median * 1.5) list.push(`The mean time (${strong(fmtMinutes(mins.mean))}) is well above the median: a few long conversations stretch the average.`);
+    const quick = msgs.histogram.filter(h => h.messages <= 3).reduce((s, h) => s + h.conversations, 0);
+    list.push(`${strong(fmtPct(ratioPct(quick, d.conversations_analyzed)))} of agreements happen within the first 3 messages.`);
+  }
+  if (d.conversations_without_messages) list.push(`${strong(nf.format(d.conversations_without_messages))} conversations have an agreement but no earlier chat message, so they are left out of the message and time statistics.`);
+  if (agreed && !sources.meeting_confirmed_event) list.push('No <code>MEETING_CONFIRMED</code> event has been recorded yet: agreement times come from completed exchanges, so they are upper bounds.');
+  if (d.conversations_analyzed && d.conversations_analyzed < 30) list.push(`Small sample (${plural(d.conversations_analyzed, 'conversation')}): treat these numbers as indicative.`);
+  insights('insights', list);
+
+  tiles('source-tiles', [
+    { label: 'Agreements from MEETING_CONFIRMED events', value: nf.format(sources.meeting_confirmed_event) },
+    { label: 'Agreements inferred from completed exchanges', value: nf.format(sources.exchange_completed_at) },
+  ]);
+  table('t-data', ['Metric', 'Messages', 'Minutes'], [
+    ['Mean', msgs.mean, mins.mean], ['Median', msgs.median, mins.median], ['75th percentile', msgs.p75, mins.p75],
+    ['Min', msgs.min, mins.min], ['Max', msgs.max, mins.max], ['Q1', '', box.q1], ['Q3', '', box.q3],
+  ]);
+}
+start(render);
+</script>
+{% endblock %}

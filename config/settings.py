@@ -56,6 +56,10 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# Django's default ('same-origin') sends no Referer to other sites. OpenStreetMap's tile servers
+# require one, so the BQ12 map gets "403 Access blocked" without this.
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
@@ -66,8 +70,6 @@ TEMPLATES = [
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
             ],
         },
     },

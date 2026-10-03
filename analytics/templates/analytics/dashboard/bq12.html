@@ -1,0 +1,191 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ12 · Meeting points{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+#map { height: 400px; border-radius: 8px; background: var(--grid); }
+@media (prefers-color-scheme: dark) {
+  #map .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9); }
+}
+</style>
+{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="controls">
+  <label for="hour-select">Hour of day ({{ campus_time_zone }})</label>
+  <button type="button" class="btn" id="hour-prev" aria-label="Previous hour">←</button>
+  <select id="hour-select"></select>
+  <button type="button" class="btn" id="hour-next" aria-label="Next hour">→</button>
+</div>
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">Where do exchanges happen?</h2>
+<section class="card">
+  <h2>Campus map</h2>
+  <p class="sub" id="map-sub">Circle area is proportional to completed exchanges at each meeting point.</p>
+  <div id="map" role="img" aria-label="Map of meeting points sized by completed exchanges"></div>
+  <p class="status" id="map-status"></p>
+</section>
+
+<div class="grid2" style="margin-top:16px">
+  <section class="card">
+    <h2>Completed exchanges per meeting point</h2>
+    <p class="sub" id="sub-points"></p>
+    <div class="chart-box tall"><canvas id="c-points" role="img" aria-label="Completed exchanges per meeting point"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Completed exchanges by hour</h2>
+    <p class="sub">All meeting points. The selected hour is highlighted.</p>
+    <div class="chart-box tall"><canvas id="c-hours" role="img" aria-label="Completed exchanges by hour of day"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">How does the density shift during the day?</h2>
+<section class="card">
+  <h2>Meeting point by hour</h2>
+  <p class="sub">Each cell is the number of completed exchanges at that meeting point in that hour. Darker means more.</p>
+  <div class="heat-wrap" id="heat"></div>
+</section>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>Only exchanges with status <code>COMPLETED</code> and a meeting point are counted.</li>
+    <li>The hour is the completion time of the exchange in campus time (<code>{{ campus_time_zone }}</code>).</li>
+    <li>The map shows one circle per meeting point, sized by its completed exchanges in the selected hour (all hours by default). Points with no exchange in that hour are drawn as small grey dots.</li>
+    <li><strong>Monitored</strong> comes from the meeting point's <code>isMonitored</code> flag. After dark means 18:00–05:59.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const select = el('hour-select');
+select.innerHTML = '<option value="">All hours</option>' + HOURS.map(h => `<option value="${h}">${hourLabel(h)}</option>`).join('');
+let redraw = () => {};
+let map = null, markers = null, fitted = false;
+
+function renderMap(points, selected) {
+  const located = points.filter(p => p.lat != null && p.lng != null);
+  const note = el('map-status');
+  if (!window.L) { note.textContent = 'The map library could not be loaded (check the internet connection).'; return; }
+  if (!located.length) { note.textContent = 'No meeting point has coordinates yet.'; return; }
+  note.textContent = '';
+  if (!map) {
+    map = L.map('map', { scrollWheelZoom: false });
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+    markers = L.layerGroup().addTo(map);
+  }
+  markers.clearLayers();
+  const max = Math.max(...located.map(p => p.total), 1);
+  located.forEach(p => {
+    const marker = p.total
+      ? L.circleMarker([p.lat, p.lng], { radius: 6 + Math.sqrt(p.total / max) * 28, color: css('--surface-1'), weight: 2, fillColor: series(1), fillOpacity: 0.6 })
+      : L.circleMarker([p.lat, p.lng], { radius: 4, color: css('--surface-1'), weight: 1, fillColor: css('--text-muted'), fillOpacity: 0.8 });
+    marker.bindTooltip(`<strong>${esc(p.name)}</strong><br>${nf.format(p.total)} completed exchanges${selected === '' ? '' : ' at ' + hourLabel(selected)}<br>${p.monitored ? 'Monitored' : 'Not monitored'}`).addTo(markers);
+  });
+  if (!fitted) {
+    map.fitBounds(L.latLngBounds(located.map(p => [p.lat, p.lng])).pad(0.4), { maxZoom: 17 });
+    fitted = true;
+  }
+  map.invalidateSize();
+}
+
+function render(d) {
+  setAnswer(HEADLINES[12](d));
+  if (d.available === false) {
+    setStatus('Meeting point data is not available yet (the BQ12 migration has not been applied).', true);
+    return;
+  }
+  const selected = select.value;
+  const all = pointTotals(d.data, '');
+  const points = pointTotals(d.data, selected);
+  const shown = points.filter(p => p.total);
+  const grandTotal = total(all.map(p => p.total));
+  const hourTotals = HOURS.map(h => d.data.filter(r => r.hour === h).reduce((s, r) => s + r.total, 0));
+  const monitoredTotal = total(all.filter(p => p.monitored).map(p => p.total));
+  const selectedTotal = total(points.map(p => p.total));
+  if (!d.data.length) setStatus('No completed exchange with a meeting point yet.');
+
+  tiles('tiles', [
+    { label: selected === '' ? 'Completed exchanges' : 'Exchanges at ' + hourLabel(selected), value: nf.format(selectedTotal), hint: selected === '' ? '' : `${fmtPct(ratioPct(selectedTotal, grandTotal))} of all` },
+    { label: 'Meeting points used', value: nf.format(shown.length), hint: 'of ' + nf.format(all.length) + ' used overall' },
+    { label: 'Busiest meeting point', value: shown.length ? esc(shown[0].name) : '–', hint: shown.length ? plural(shown[0].total, 'exchange') : '' },
+    { label: 'Share at monitored points', value: fmtPct(ratioPct(monitoredTotal, grandTotal)), hint: 'all hours' },
+  ]);
+
+  renderMap(points, selected);
+
+  el('sub-points').textContent = selected === '' ? 'All hours, most used first.' : `At ${hourLabel(selected)} only, most used first.`;
+  draw('c-points', {
+    type: 'bar',
+    data: { labels: shown.map(p => p.name), datasets: [bar('Completed exchanges', shown.map(p => p.total), 1)] },
+    options: baseOptions({
+      legend: false,
+      horizontal: true,
+      counts: true,
+      plugins: { tooltip: { callbacks: { afterLabel: c => shown[c.dataIndex].monitored ? 'Monitored' : 'Not monitored' } } },
+    }),
+  });
+  draw('c-hours', {
+    type: 'bar',
+    data: {
+      labels: HOURS.map(hourLabel),
+      datasets: [bar('Completed exchanges', hourTotals, 1, {
+        backgroundColor: HOURS.map(h => (selected === '' || Number(selected) === h ? series(1) : series(1) + '55')),
+      })],
+    },
+    options: baseOptions({ legend: false, counts: true }),
+  });
+
+  heatmap('heat', {
+    rowLabels: all.map(p => p.name), colLabels: HOURS.map(h => String(h).padStart(2, '0')), color: series(1),
+    matrix: all.map(p => HOURS.map(h => d.data.filter(r => r.meeting_point_id === p.id && r.hour === h).reduce((s, r) => s + r.total, 0))),
+    tip: (r, c, v) => `${all[r].name}, ${hourLabel(c)}: ${nf.format(v)} completed exchanges`,
+  });
+
+  const list = [];
+  if (grandTotal) {
+    const peak = argMax(hourTotals);
+    list.push(`${strong(all[0].name)} is the busiest meeting point with ${strong(fmtPct(ratioPct(all[0].total, grandTotal)))} of exchanges (${nf.format(all[0].total)} of ${nf.format(grandTotal)}).`);
+    if (all.length > 3) list.push(`The top 3 meeting points hold ${strong(fmtPct(ratioPct(total(all.slice(0, 3).map(p => p.total)), grandTotal)))} of exchanges, out of ${nf.format(all.length)} points used.`);
+    list.push(`Exchanges peak at ${strong(hourLabel(peak))}, with ${strong(fmtPct(ratioPct(hourTotals[peak], grandTotal)))} of all exchanges.`);
+    all.slice(0, 3).forEach(p => {
+      const byHour = HOURS.map(h => d.data.filter(r => r.meeting_point_id === p.id && r.hour === h).reduce((s, r) => s + r.total, 0));
+      list.push(`${strong(p.name)} is busiest at ${strong(hourLabel(argMax(byHour)))}.`);
+    });
+    list.push(`${strong(fmtPct(ratioPct(monitoredTotal, grandTotal)))} of exchanges happen at monitored meeting points.`);
+    const dark = h => h >= 18 || h < 6;
+    const darkAll = d.data.filter(r => dark(r.hour));
+    const darkTotal = total(darkAll.map(r => r.total));
+    if (darkTotal) {
+      const darkUnmonitored = total(darkAll.filter(r => !r.is_monitored).map(r => r.total));
+      list.push(`After dark (18:00–05:59) there ${darkTotal === 1 ? 'is' : 'are'} ${strong(plural(darkTotal, 'exchange'))}, and ${strong(fmtPct(ratioPct(darkUnmonitored, darkTotal)))} of them take place at unmonitored points.`);
+    }
+    if (selected !== '') {
+      list.push(shown.length
+        ? `At ${strong(hourLabel(selected))} the busiest point is ${strong(shown[0].name)} (${nf.format(shown[0].total)} of ${nf.format(selectedTotal)} exchanges).`
+        : `No completed exchange happens at ${strong(hourLabel(selected))}.`);
+    }
+    if (grandTotal < 30) list.push(`Few exchanges so far (${grandTotal}): treat these patterns as indicative.`);
+  }
+  insights('insights', list);
+
+  table('t-data', ['Meeting point', 'Monitored', 'Completed exchanges (selected)', 'Completed exchanges (all hours)'],
+    all.map(p => [p.name, p.monitored ? 'Yes' : 'No', points.find(x => x.id === p.id).total, p.total]));
+}
+
+const step = delta => { select.value = String((((select.value === '' ? -1 : Number(select.value)) + delta) % 24 + 24) % 24); redraw(); };
+select.addEventListener('change', () => redraw());
+el('hour-prev').addEventListener('click', () => step(-1));
+el('hour-next').addEventListener('click', () => step(1));
+start(render).then(fn => { redraw = fn; });
+</script>
+{% endblock %}

@@ -1,0 +1,122 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ6 · Category performance{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">Listings and exchanges by category</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Listings and completed exchanges</h2>
+    <p class="sub">Categories are sorted by completed exchanges, then by listings.</p>
+    <div class="chart-box tall"><canvas id="c-counts" role="img" aria-label="Listings and completed exchanges per category"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Exchange rate</h2>
+    <p class="sub">Completed exchanges as a share of listings. The grey bar is the marketplace as a whole.</p>
+    <div class="chart-box tall"><canvas id="c-rate" role="img" aria-label="Exchange rate per category"></canvas></div>
+  </section>
+</div>
+<section class="card" style="margin-top:16px">
+  <h2>Share of listings versus share of exchanges</h2>
+  <p class="sub">A category whose exchange share is higher than its listing share sells better than its size suggests.</p>
+  <div class="chart-box"><canvas id="c-share" role="img" aria-label="Share of listings and share of exchanges per category"></canvas></div>
+</section>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li><strong>Listings</strong> are all materials in the category, whatever their status.</li>
+    <li><strong>Completed exchanges</strong> are the exchanges with status <code>COMPLETED</code> for those materials. Pending and cancelled exchanges are not counted.</li>
+    <li><strong>Exchange rate</strong> is completed exchanges divided by listings.</li>
+    <li>Rates of categories with few listings swing widely; check the listing count before drawing conclusions.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  const rows = d.data.map(r => ({ ...r, name: prettify(r.category), rate: ratioPct(r.completed_exchanges, r.total_listings) }));
+  const listings = total(rows.map(r => r.total_listings));
+  const exchanges = total(rows.map(r => r.completed_exchanges));
+  const overall = ratioPct(exchanges, listings);
+  setAnswer(HEADLINES[6](d));
+
+  const best = [...rows].filter(r => r.total_listings).sort((a, b) => b.rate - a.rate)[0];
+  tiles('tiles', [
+    { label: 'Listings', value: nf.format(listings), hint: nf.format(rows.length) + ' categories' },
+    { label: 'Completed exchanges', value: nf.format(exchanges) },
+    { label: 'Overall exchange rate', value: fmtPct(overall) },
+    { label: 'Best exchange rate', value: best ? fmtPct(best.rate) : '–', hint: best ? esc(best.name) : '' },
+  ]);
+
+  draw('c-counts', {
+    type: 'bar',
+    data: { labels: rows.map(r => r.name), datasets: [bar('Listings', rows.map(r => r.total_listings), 1), bar('Completed exchanges', rows.map(r => r.completed_exchanges), 2)] },
+    options: baseOptions({ horizontal: true, counts: true }),
+  });
+
+  const byRate = [...rows].sort((a, b) => b.rate - a.rate);
+  draw('c-rate', {
+    type: 'bar',
+    data: {
+      labels: [...byRate.map(r => r.name), 'All categories'],
+      datasets: [bar('Exchange rate', [...byRate.map(r => +r.rate.toFixed(1)), +overall.toFixed(1)], 1, {
+        backgroundColor: [...byRate.map(() => series(1)), css('--text-muted')],
+      })],
+    },
+    options: baseOptions({
+      legend: false,
+      horizontal: true,
+      plugins: { tooltip: { callbacks: { label: c => fmtPct(c.parsed.x), afterLabel: c => byRate[c.dataIndex] ? `${nf.format(byRate[c.dataIndex].completed_exchanges)} of ${nf.format(byRate[c.dataIndex].total_listings)} listings` : '' } } },
+      scales: axes({ horizontal: true, x: { ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  draw('c-share', {
+    type: 'bar',
+    data: {
+      labels: rows.map(r => r.name),
+      datasets: [
+        bar('Share of listings', rows.map(r => +ratioPct(r.total_listings, listings).toFixed(1)), 1),
+        bar('Share of completed exchanges', rows.map(r => +ratioPct(r.completed_exchanges, exchanges).toFixed(1)), 2),
+      ],
+    },
+    options: baseOptions({
+      plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtPct(c.parsed.y)}` } } },
+      scales: axes({ y: { ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  const list = [];
+  if (rows.length && listings) {
+    const topL = [...rows].sort((a, b) => b.total_listings - a.total_listings)[0];
+    list.push(`${strong(topL.name)} makes up ${strong(fmtPct(ratioPct(topL.total_listings, listings)))} of all listings (${nf.format(topL.total_listings)} of ${nf.format(listings)}).`);
+    if (exchanges) {
+      const topE = [...rows].sort((a, b) => b.completed_exchanges - a.completed_exchanges)[0];
+      list.push(`${strong(topE.name)} accounts for ${strong(fmtPct(ratioPct(topE.completed_exchanges, exchanges)))} of completed exchanges (${nf.format(topE.completed_exchanges)} of ${nf.format(exchanges)}).`);
+      const over = rows.map(r => ({ r, gap: ratioPct(r.completed_exchanges, exchanges) - ratioPct(r.total_listings, listings) })).sort((a, b) => b.gap - a.gap);
+      if (over[0].gap > 1) list.push(`${strong(over[0].r.name)} sells better than its size suggests: ${fmtPct(ratioPct(over[0].r.completed_exchanges, exchanges))} of exchanges from ${fmtPct(ratioPct(over[0].r.total_listings, listings))} of listings.`);
+      const last = over[over.length - 1];
+      if (last.gap < -1) list.push(`${strong(last.r.name)} lags: ${fmtPct(ratioPct(last.r.total_listings, listings))} of listings but only ${fmtPct(ratioPct(last.r.completed_exchanges, exchanges))} of exchanges.`);
+    } else {
+      list.push('No exchange has been completed yet, so the exchange rates are all 0%.');
+    }
+    const idle = rows.filter(r => r.total_listings && !r.completed_exchanges).map(r => r.name);
+    if (idle.length && exchanges) list.push(`No completed exchange yet in: ${idle.map(strong).join(', ')}.`);
+    const thin = rows.filter(r => r.total_listings < 10).map(r => r.name);
+    if (thin.length) list.push(`Fewer than 10 listings in ${thin.map(strong).join(', ')}: their rates are not reliable yet.`);
+  }
+  insights('insights', list);
+
+  table('t-data', ['Category', 'Listings', 'Completed exchanges', 'Exchange rate (%)'], rows.map(r => [r.name, r.total_listings, r.completed_exchanges, nf1.format(r.rate)]));
+}
+start(render);
+</script>
+{% endblock %}
