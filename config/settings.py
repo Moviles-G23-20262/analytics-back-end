@@ -43,12 +43,14 @@ INSTALLED_APPS = [
     # 'django.contrib.messages',
     'django.contrib.postgres',
     'django.contrib.staticfiles',
+    'corsheaders',
     'analytics',
 ]
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     # 'django.contrib.sessions.middleware.SessionMiddleware',
+    'corsheaders.middleware.CorsMiddleware',  # must come before CommonMiddleware
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     # 'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -59,6 +61,11 @@ MIDDLEWARE = [
 # Django's default ('same-origin') sends no Referer to other sites. OpenStreetMap's tile servers
 # require one, so the BQ12 map gets "403 Access blocked" without this.
 SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+
+# CORS: the API is read-only, so cross-origin GETs from the web dashboard are allowed.
+# Any origin in development (DEBUG); in production only the origins listed here.
+CORS_ALLOW_ALL_ORIGINS = DEBUG
+CORS_ALLOWED_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173']
 
 ROOT_URLCONF = 'config.urls'
 

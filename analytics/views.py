@@ -15,7 +15,7 @@ from django.db.models.functions import ExtractHour, ExtractWeekDay
 from .models import Material, AnalyticsEvent, AnalyticsEventType
 from .models import Exchange, Notification, NotificationType, WishlistItem
 from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, ExchangeStatus
-from .models import ChatRoom, Message
+from .models import ChatRoom, Message, MaterialCategory, MaterialCondition
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
 
@@ -191,6 +191,43 @@ def buyer_journey_funnel(request):
     exchanges = Exchange.objects.values('buyer_id', 'material_id', 'completed_at')
 
     return JsonResponse(calculate_buyer_journey_metrics(listing_views, contacts, exchanges))
+
+# Smart Feature: fair-price estimation from real completed sales (Exchange.price).
+MIN_PRICE_SAMPLES = 5
+
+def calculate_price_stats(prices):
+    #Tukey fences: descarta outliers fuera de [Q1 - 1.5*IQR, Q3 + 1.5*IQR] antes de resumir
+    ordered = sorted(float(p) for p in prices)
+    if len(ordered) >= 4:
+        q1, q3 = _percentile(ordered, 0.25), _percentile(ordered, 0.75)
+        iqr = q3 - q1
+        ordered = [p for p in ordered if q1 - 1.5 * iqr <= p <= q3 + 1.5 * iqr]
+    return {
+        'sample_size': len(ordered),
+        'p25': round(_percentile(ordered, 0.25), 2),
+        'median': round(_percentile(ordered, 0.5), 2),
+        'p75': round(_percentile(ordered, 0.75), 2),
+    }
+
+def price_stats(request):
+    category = request.GET.get('category')
+    condition = request.GET.get('condition')
+    if category not in MaterialCategory.values:
+        return JsonResponse({'error': 'category is required and must be a valid MaterialCategory'}, status=400)
+    if condition is not None and condition not in MaterialCondition.values:
+        return JsonResponse({'error': 'condition must be a valid MaterialCondition'}, status=400)
+
+    sales = Exchange.objects.filter(material__category=category, status=ExchangeStatus.COMPLETED)
+    scope = 'category'
+    if condition:
+        narrowed = sales.filter(material__condition=condition)
+        #si hay pocas ventas con la misma condicion se amplia a toda la categoria
+        if narrowed.count() >= MIN_PRICE_SAMPLES:
+            sales, scope = narrowed, 'category_condition'
+
+    stats = calculate_price_stats(sales.values_list('price', flat=True))
+    stats.update({'category': category, 'condition': condition, 'scope': scope})
+    return JsonResponse(stats)
 
 # Business Question 4
 

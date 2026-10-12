@@ -7,5 +7,6 @@ urlpatterns = [
     path('wishlist-conversion/', views.wishlist_smart_match_conversion, name='wishlist-conversion'),
     path('meeting-points/', views.meeting_point_usage, name='meeting-point-usage'),
     path('buyer-journey-funnel/', views.buyer_journey_funnel, name='buyer-journey-funnel'),
+    path('price-stats/', views.price_stats, name='price-stats'),
     path('chat-to-meeting-point/', views.chat_to_meeting_point, name='chat-to-meeting-point'),
 ]
