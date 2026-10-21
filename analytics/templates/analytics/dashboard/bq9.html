@@ -1,0 +1,108 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ9 · Price variation{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">Same item, different prices</h2>
+<section class="card">
+  <h2>Price range of each item</h2>
+  <p class="sub">Lowest, median and highest asking price of items listed more than once (up to 20, most listed first).</p>
+  <div class="chart-box tall"><canvas id="c-items" role="img" aria-label="Lowest, median and highest price per item"></canvas></div>
+</section>
+<div class="grid2" style="margin-top:16px">
+  <section class="card">
+    <h2>By condition</h2>
+    <p class="sub">Median price relative to the same item's median. 100% is the typical price; below means cheaper.</p>
+    <div class="chart-box"><canvas id="c-condition" role="img" aria-label="Relative price by item condition"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>By seller faculty</h2>
+    <p class="sub">Median price relative to the same item's median, by the faculty of the seller.</p>
+    <div class="chart-box"><canvas id="c-faculty" role="img" aria-label="Relative price by seller faculty"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>Prices are the <strong>asking prices</strong> of every listing (<code>Material.price</code>), sold or not. Free listings are left out.</li>
+    <li>Two listings are the <strong>same item</strong> when they share the category and the model (calculators, lab equipment), or, without a model, the title and the edition. Titles are compared ignoring case, accents and punctuation; different wordings of the same book are not matched.</li>
+    <li>Only items listed at least twice are compared. The <strong>spread</strong> is (highest − lowest) / median.</li>
+    <li>To compare conditions and faculties across items with very different prices, each listing is divided by its item's median price, and the median of those ratios is shown.</li>
+    <li>Completed sale prices per category and condition, used by the price suggestion, are in <code>/analytics/price-stats/</code>.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const pctOf = r => +(r * 100).toFixed(1);
+function render(d) {
+  setAnswer(HEADLINES[9](d));
+  const items = d.items;
+
+  tiles('tiles', [
+    { label: 'Listings with a price', value: nf.format(d.listings) },
+    { label: 'Items listed more than once', value: nf.format(d.items_compared), hint: plural(d.listings_compared, 'listing') },
+    { label: 'Median price spread', value: d.items_compared ? fmtPct(d.median_spread_pct) : '–', hint: 'highest vs lowest, same item' },
+    { label: 'Faculties compared', value: nf.format(d.by_faculty.length) },
+  ]);
+
+  draw('c-items', {
+    type: 'bar',
+    data: {
+      labels: items.map(i => i.item),
+      datasets: [
+        bar('Lowest', items.map(i => i.min), 1),
+        bar('Median', items.map(i => i.median), 3),
+        bar('Highest', items.map(i => i.max), 2),
+      ],
+    },
+    options: baseOptions({
+      horizontal: true,
+      plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: $${nf.format(c.parsed.x)}`, afterBody: cs => { const i = items[cs[0].dataIndex]; return `${plural(i.listings, 'listing')} from ${plural(i.sellers, 'seller')}, spread ${fmtPct(i.spread_pct)}`; } } } },
+      scales: axes({ horizontal: true, x: { ticks: { callback: v => '$' + nf.format(v) } } }),
+    }),
+  });
+
+  const relative = (id, rows, labelOf, n) => draw(id, {
+    type: 'bar',
+    data: { labels: rows.map(labelOf), datasets: [bar('Price vs item median', rows.map(r => pctOf(r.median_relative_price)), n)] },
+    options: baseOptions({
+      legend: false,
+      plugins: { tooltip: { callbacks: { label: c => fmtPct(c.parsed.y) + ' of the typical price', afterLabel: c => plural(rows[c.dataIndex].listings, 'listing') } } },
+      scales: axes({ y: { ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+  relative('c-condition', d.by_condition, r => prettify(r.condition), 1);
+  relative('c-faculty', d.by_faculty, r => r.faculty, 2);
+
+  const list = [];
+  if (!d.items_compared) {
+    list.push('No item has been listed more than once yet, so there is nothing to compare.');
+  } else {
+    const widest = [...items].sort((a, b) => b.spread_pct - a.spread_pct)[0];
+    list.push(`${strong(widest.item)} has the widest range: from $${nf.format(widest.min)} to $${nf.format(widest.max)} (${fmtPct(widest.spread_pct)} of its median) across ${plural(widest.sellers, 'seller')}.`);
+    const conds = d.by_condition.filter(r => r.condition !== 'UNKNOWN');
+    if (conds.length >= 2) {
+      const hi = conds[0], lo = conds[conds.length - 1];
+      list.push(`${strong(prettify(hi.condition))} items are listed at ${fmtPct(pctOf(hi.median_relative_price))} of the typical price, ${strong(prettify(lo.condition))} at ${fmtPct(pctOf(lo.median_relative_price))}.`);
+    }
+    const facs = d.by_faculty.filter(r => r.faculty !== 'Unknown' && r.listings >= 2).sort((a, b) => b.median_relative_price - a.median_relative_price);
+    if (facs.length >= 2) list.push(`Sellers from ${strong(facs[0].faculty)} ask the most (${fmtPct(pctOf(facs[0].median_relative_price))} of the typical price) and from ${strong(facs[facs.length - 1].faculty)} the least (${fmtPct(pctOf(facs[facs.length - 1].median_relative_price))}).`);
+    if (d.listings_compared < 20) list.push(`Only ${plural(d.listings_compared, 'listing')} can be compared so far: treat these differences as early signals.`);
+  }
+  insights('insights', list);
+
+  table('t-data', ['Item', 'Category', 'Listings', 'Sellers', 'Lowest', 'Median', 'Highest', 'Spread (%)'],
+    items.map(i => [i.item, prettify(i.category), i.listings, i.sellers, nf.format(i.min), nf.format(i.median), nf.format(i.max), nf1.format(i.spread_pct)]));
+}
+start(render);
+</script>
+{% endblock %}

@@ -1,3 +1,4 @@
+import unicodedata
 from zoneinfo import ZoneInfo
 
 from django.http import Http404
@@ -10,7 +11,7 @@ import logging
 
 from django.db import DataError, ProgrammingError
 from django.db import ProgrammingError
-from django.db.models import Count, Func, IntegerField, Q
+from django.db.models import Count, F, Func, IntegerField, Q
 from django.db.models.functions import ExtractHour, ExtractWeekDay
 from .models import Material, AnalyticsEvent, AnalyticsEventType
 from .models import Exchange, Notification, NotificationType, WishlistItem
@@ -347,16 +348,226 @@ def chat_to_meeting_point(request):
 
 
 # Business Question 8
-# TODO: implement
+# Field of the listing form -> (label, categories where it applies). None = every category.
+# Edition only makes sense for books and model for devices, so a calculator without an edition is not "empty".
+LISTING_FIELDS = [
+    ('course_code', 'Course', None),
+    ('edition', 'Edition', {MaterialCategory.BOOKS}),
+    ('model_name', 'Model', {MaterialCategory.CALCULATORS, MaterialCategory.LAB_EQUIPMENT}),
+    ('condition', 'Condition', None),
+    ('description', 'Description', None),
+    ('image_urls', 'Photos', None),
+    ('faculty', 'Faculty', None),
+]
+
+def _is_empty(value):
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple)):
+        return not value
+    return False
+
+def summarize_empty_fields(listings):
+    #por campo: cuantas publicaciones lo podian llenar y cuantas lo dejaron vacio
+    applicable = {field: 0 for field, _, _ in LISTING_FIELDS}
+    empty = {field: 0 for field, _, _ in LISTING_FIELDS}
+    by_category = {}
+    complete = 0
+    total = 0
+
+    for listing in listings:
+        total += 1
+        category = listing['category']
+        row = by_category.setdefault(category, {'category': category, 'listings': 0, 'empty': {}})
+        row['listings'] += 1
+        missing_any = False
+        for field, _, categories in LISTING_FIELDS:
+            if categories is not None and category not in categories:
+                continue
+            applicable[field] += 1
+            if _is_empty(listing.get(field)):
+                empty[field] += 1
+                row['empty'][field] = row['empty'].get(field, 0) + 1
+                missing_any = True
+        if not missing_any:
+            complete += 1
+
+    fields = [
+        {
+            'field': field,
+            'label': label,
+            'applies_to': sorted(categories) if categories is not None else None,
+            'listings': applicable[field],
+            'empty': empty[field],
+            'empty_rate': round(empty[field] / applicable[field], 4) if applicable[field] else 0.0,
+        }
+        for field, label, categories in LISTING_FIELDS
+    ]
+    fields.sort(key=lambda f: (-f['empty_rate'], -f['empty'], f['field']))
+    return {
+        'total_listings': total,
+        'complete_listings': complete,
+        'fields': fields,
+        'by_category': sorted(by_category.values(), key=lambda r: (-r['listings'], r['category'])),
+    }
+
+def empty_fields(request):
+    listings = Material.objects.values(
+        'category', 'course_code', 'edition', 'model_name', 'condition', 'description', 'image_urls',
+        faculty=F('seller__faculty'),
+    )
+    return JsonResponse(summarize_empty_fields(listings))
 
 # Business Question 9
-# TODO: implement
+MAX_ITEMS_LISTED = 20
+
+def _normalize(text):
+    #"Cálculo  de Stewart, 8va." y "calculo de stewart 8va" cuentan como el mismo texto
+    plain = unicodedata.normalize('NFKD', text or '').encode('ascii', 'ignore').decode()
+    return ' '.join(''.join(c if c.isalnum() else ' ' for c in plain.lower()).split())
+
+def item_key(listing):
+    #mismo item = mismo modelo; sin modelo, mismo titulo y edicion (dentro de la misma categoria)
+    model = _normalize(listing.get('model_name'))
+    if model:
+        return (listing['category'], 'model', model)
+    title = _normalize(listing.get('title'))
+    if not title:
+        return None
+    return (listing['category'], 'title', title, _normalize(listing.get('edition')))
+
+def _median(values):
+    return _percentile(sorted(values), 0.5)
+
+def _relative_by(groups, key):
+    #precio de cada publicacion dividido por la mediana de su item: 0.8 = 20% mas barato que lo normal
+    relative = {}
+    for listings in groups:
+        median = _median([l['price'] for l in listings])
+        if not median:
+            continue
+        for l in listings:
+            relative.setdefault(l.get(key), []).append(l['price'] / median)
+    return relative
+
+def summarize_price_variation(listings):
+    groups = {}
+    total = 0
+    for listing in listings:
+        price = float(listing['price'] or 0)
+        if price <= 0:
+            continue
+        total += 1
+        key = item_key(listing)
+        if key is not None:
+            groups.setdefault(key, []).append({**listing, 'price': price})
+
+    #solo se comparan items publicados al menos dos veces
+    comparable = [g for g in groups.values() if len(g) >= 2]
+
+    items = []
+    for g in comparable:
+        prices = sorted(l['price'] for l in g)
+        median = _percentile(prices, 0.5)
+        first = g[0]
+        label = first['title']
+        if first.get('model_name'):
+            label = f"{label} ({first['model_name']})"
+        elif first.get('edition'):
+            label = f"{label}, {first['edition']}"
+        by_condition = {}
+        for l in g:
+            by_condition.setdefault(l.get('condition') or 'UNKNOWN', []).append(l['price'])
+        items.append({
+            'item': label,
+            'category': first['category'],
+            'listings': len(g),
+            'sellers': len({str(l['seller_id']) for l in g}),
+            'min': round(prices[0], 2),
+            'median': round(median, 2),
+            'max': round(prices[-1], 2),
+            'spread_pct': round((prices[-1] - prices[0]) / median * 100, 2) if median else 0.0,
+            'by_condition': {c: round(_median(v), 2) for c, v in sorted(by_condition.items())},
+        })
+    items.sort(key=lambda i: (-i['listings'], -i['spread_pct'], i['item']))
+
+    condition_order = {c: i for i, c in enumerate(MaterialCondition.values)}
+    by_condition = [
+        {'condition': c or 'UNKNOWN', 'listings': len(v), 'median_relative_price': round(_median(v), 4)}
+        for c, v in _relative_by(comparable, 'condition').items()
+    ]
+    by_condition.sort(key=lambda r: condition_order.get(r['condition'], len(condition_order)))
+    by_faculty = [
+        {'faculty': f or 'Unknown', 'listings': len(v), 'median_relative_price': round(_median(v), 4)}
+        for f, v in _relative_by(comparable, 'faculty').items()
+    ]
+    by_faculty.sort(key=lambda r: (-r['listings'], r['faculty']))
+
+    return {
+        'listings': total,
+        'items_compared': len(comparable),
+        'listings_compared': sum(len(g) for g in comparable),
+        'median_spread_pct': round(_median([i['spread_pct'] for i in items]), 2),
+        'items': items[:MAX_ITEMS_LISTED],
+        'by_condition': by_condition,
+        'by_faculty': by_faculty,
+    }
+
+def price_variation(request):
+    listings = Material.objects.values(
+        'title', 'category', 'edition', 'model_name', 'condition', 'price', 'seller_id',
+        faculty=F('seller__faculty'),
+    )
+    return JsonResponse(summarize_price_variation(listings))
 
 # Business Question 10
 # TODO: implement
 
 # Business Question 11
-# TODO: implement
+# Upper bound (days) of each bar in the time-to-sell histogram; the last bar is open-ended.
+SELL_TIME_BUCKETS = [(1, 'Under 1 day'), (3, '1-3 days'), (7, '3-7 days'), (14, '1-2 weeks'), (30, '2-4 weeks'), (None, '30+ days')]
+
+def summarize_time_to_sell(sales):
+    #dias entre que se publica el material y se completa su intercambio
+    days = []
+    by_category = {}
+    skipped = 0
+    for sale in sales:
+        listed_at, sold_at = sale['listed_at'], sale['completed_at']
+        if listed_at is None or sold_at is None or sold_at < listed_at:
+            skipped += 1
+            continue
+        d = (sold_at - listed_at).total_seconds() / 86400
+        days.append(d)
+        by_category.setdefault(sale['category'], []).append(d)
+
+    histogram = []
+    lower = 0
+    for upper, label in SELL_TIME_BUCKETS:
+        count = sum(1 for d in days if d >= lower and (upper is None or d < upper))
+        histogram.append({'bucket': label, 'sold': count})
+        lower = upper
+
+    categories = [
+        {'category': c, 'sold': len(v), 'mean_days': round(sum(v) / len(v), 4), 'median_days': round(_median(v), 4)}
+        for c, v in by_category.items()
+    ]
+    categories.sort(key=lambda r: (r['median_days'], r['category']))
+    return {
+        'sold_listings': len(days),
+        'skipped': skipped,
+        'days_to_sell': _describe(days),
+        'histogram': histogram,
+        'by_category': categories,
+    }
+
+def time_to_sell(request):
+    sales = Exchange.objects.filter(status=ExchangeStatus.COMPLETED).values(
+        'completed_at', category=F('material__category'), listed_at=F('material__created_at'),
+    )
+    return JsonResponse(summarize_time_to_sell(sales))
 
 
 class CampusHour(Func):
@@ -438,6 +649,24 @@ DASHBOARD_QUESTIONS = [
         'title': 'Wishlist and Smart Match',
         'question': 'How many buyers save items in the wishlist, and how many of those saved items end in a purchase after a Smart matching notification?',
         'endpoint': 'wishlist-conversion',
+    },
+    {
+        'number': 8,
+        'title': 'Empty listing fields',
+        'question': 'Which fields of the listing form do sellers leave empty most often (course, edition, condition, faculty)?',
+        'endpoint': 'empty-fields',
+    },
+    {
+        'number': 9,
+        'title': 'Price variation',
+        'question': 'How do prices of the same item vary (same book edition, same model) between sellers, faculties, and item condition?',
+        'endpoint': 'price-variation',
+    },
+    {
+        'number': 11,
+        'title': 'Time to sell',
+        'question': 'What is the average time (in days) it takes for a newly listed academic item to be marked as sold?',
+        'endpoint': 'time-to-sell',
     },
     {
         'number': 12,
