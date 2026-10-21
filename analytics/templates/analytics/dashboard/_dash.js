@@ -183,6 +183,15 @@ const HEADLINES = {
     const all = total(points.map(p => p.total));
     return `${strong(points[0].name)} is the busiest meeting point (${nf.format(points[0].total)} of ${plural(all, 'exchange')}), and exchanges peak at ${strong(hourLabel(argMax(hours)))} (campus time).`;
   },
+
+    14(d) {
+    if (!d.ratings_total) return 'No ratings yet.';
+    if (!d.reviews_with_text) return `${plural(d.ratings_total, 'rating')}, but none has a written review yet.`;
+    const s = d.sentiment, n = d.reviews_with_text;
+    const complaint = d.top_keywords.negative[0];
+    return `${strong(fmtPct(ratioPct(s.positive, n)))} of written reviews are positive, ${strong(fmtPct(ratioPct(s.neutral, n)))} neutral and ${strong(fmtPct(ratioPct(s.negative, n)))} negative` +
+      (complaint ? `; the most repeated word in negative reviews is ${strong(complaint.word)}.` : '.');
+  },
 };
 
 // Fetch the page's endpoint, render, and re-render when the OS theme changes. Resolves to a redraw function.

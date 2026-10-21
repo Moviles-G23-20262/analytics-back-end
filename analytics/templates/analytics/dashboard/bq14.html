@@ -1,0 +1,86 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ14 · Review sentiment{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">What reviews say</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Sentiment of written reviews</h2>
+    <p class="sub">Reviews with text, classified as positive, neutral or negative.</p>
+    <div class="chart-box"><canvas id="c-sentiment" role="img" aria-label="Number of positive, neutral and negative reviews"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Stars by sentiment</h2>
+    <p class="sub">Average stars of the reviews in each group.</p>
+    <div class="chart-box"><canvas id="c-stars" role="img" aria-label="Average stars of positive, neutral and negative reviews"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Most common keywords</h2>
+<div class="grid2">
+  <section class="card"><h2>Positive reviews</h2><div class="table-wrap"><table id="t-positive"></table></div></section>
+  <section class="card"><h2>Negative reviews</h2><div class="table-wrap"><table id="t-negative"></table></div></section>
+</div>
+<section class="card" style="margin-top:16px"><h2>Feedback tags chosen</h2><div class="table-wrap"><table id="t-tags"></table></div></section>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>Only ratings with a <strong>written review</strong> are classified. Ratings with stars and tags only are counted in the total.</li>
+    <li>Each review is lower-cased and accents are removed. Every word from a <strong>positive list</strong> adds 1 and every word from a <strong>negative list</strong> subtracts 1 (English and Spanish). A negation right before a word (<code>not good</code>, <code>no amable</code>) flips it.</li>
+    <li>A total above 0 is <strong>positive</strong>, below 0 is <strong>negative</strong>, and 0 is <strong>neutral</strong>.</li>
+    <li><strong>Keywords</strong> are the most frequent words of 3 letters or more in each group, without common words like <code>the</code> or <code>muy</code>.</li>
+    <li><strong>Agreement with stars</strong> compares the text with the stars (4–5 positive, 3 neutral, 1–2 negative). A word list misses sarcasm and context, so treat the result as indicative.</li>
+  </ul>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  const s = d.sentiment;
+  setAnswer(HEADLINES[14](d));
+
+  tiles('tiles', [
+    { label: 'Ratings', value: nf.format(d.ratings_total) },
+    { label: 'With a written review', value: fmtPct(ratioPct(d.reviews_with_text, d.ratings_total)), hint: nf.format(d.reviews_with_text) + ' reviews' },
+    { label: 'Positive reviews', value: fmtPct(ratioPct(s.positive, d.reviews_with_text)), hint: nf.format(s.positive) + ' reviews' },
+    { label: 'Text agrees with stars', value: fmtPct(d.agreement_with_stars * 100) },
+  ]);
+
+  draw('c-sentiment', {
+    type: 'bar',
+    data: { labels: ['Positive', 'Neutral', 'Negative'], datasets: [bar('Reviews', [s.positive, s.neutral, s.negative], 1, { backgroundColor: [series(3), series(1), series(2)] })] },
+    options: baseOptions({ legend: false, counts: true }),
+  });
+
+  const avg = d.average_stars;
+  draw('c-stars', {
+    type: 'bar',
+    data: { labels: ['Positive', 'Neutral', 'Negative'], datasets: [bar('Average stars', [avg.positive || 0, avg.neutral || 0, avg.negative || 0], 1, { backgroundColor: [series(3), series(1), series(2)] })] },
+    options: baseOptions({ legend: false, scales: axes({ y: { max: 5 } }) }),
+  });
+
+  const words = list => list.map(k => [k.word, k.count]);
+  table('t-positive', ['Word', 'Times'], words(d.top_keywords.positive));
+  table('t-negative', ['Word', 'Times'], words(d.top_keywords.negative));
+  table('t-tags', ['Tag', 'Times'], d.top_tags.map(t => [t.tag, t.count]));
+
+  const list = [];
+  if (d.ratings_total) list.push(`${strong(fmtPct(ratioPct(d.reviews_with_text, d.ratings_total)))} of ratings include a written review (${nf.format(d.reviews_with_text)} of ${nf.format(d.ratings_total)}).`);
+  if (d.top_keywords.negative.length) list.push(`The most repeated word in negative reviews is ${strong(d.top_keywords.negative[0].word)}: a clear friction point to fix.`);
+  if (d.top_keywords.positive.length) list.push(`The most repeated word in positive reviews is ${strong(d.top_keywords.positive[0].word)}: what students value most.`);
+  if (d.reviews_with_text) list.push(`The text and the stars agree in ${strong(fmtPct(d.agreement_with_stars * 100))} of the reviews.`);
+  if (d.top_tags.length) list.push(`${strong(d.top_tags[0].tag)} is the feedback tag chosen most often (${nf.format(d.top_tags[0].count)} times).`);
+  if (d.reviews_with_text && d.reviews_with_text < 30) list.push(`Small sample (${d.reviews_with_text} written reviews): treat these results as indicative.`);
+  insights('insights', list);
+}
+start(render);
+</script>
+{% endblock %}

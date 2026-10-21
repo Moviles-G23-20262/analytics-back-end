@@ -16,6 +16,10 @@ from .models import Material, AnalyticsEvent, AnalyticsEventType
 from .models import Exchange, Notification, NotificationType, WishlistItem
 from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, ExchangeStatus
 from .models import ChatRoom, Message, MaterialCategory, MaterialCondition
+from .models import Rating
+import re
+import unicodedata
+from collections import Counter
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
 
@@ -405,7 +409,104 @@ def meeting_point_usage(request):
 
     return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'hour': hour, 'available': True, 'data': data})
 
+# Business Question 14
+# Sentimiento por diccionario (lexicon): cada palabra positiva suma 1, cada negativa resta 1,
+# y un "not"/"no" justo antes invierte la palabra ("not good" cuenta como negativa).
+SENTIMENTS = ('positive', 'neutral', 'negative')
 
+POSITIVE_WORDS = {
+    'good', 'great', 'excellent', 'friendly', 'kind', 'nice', 'fast', 'quick', 'punctual', 'perfect',
+    'helpful', 'honest', 'reliable', 'amazing', 'smooth', 'easy', 'polite', 'recommend', 'recommended',
+    'love', 'thanks', 'fair', 'clean', 'awesome',
+    'bueno', 'buena', 'excelente', 'amable', 'rapido', 'rapida', 'puntual', 'perfecto', 'perfecta',
+    'genial', 'honesto', 'honesta', 'confiable', 'recomiendo', 'recomendado', 'gracias', 'chevere', 'bien',
+}
+NEGATIVE_WORDS = {
+    'bad', 'late', 'rude', 'slow', 'broken', 'damaged', 'scam', 'worst', 'terrible', 'poor', 'dirty',
+    'fake', 'dishonest', 'wrong', 'missing', 'problem', 'awful', 'cancelled',
+    'malo', 'mala', 'mal', 'tarde', 'grosero', 'grosera', 'lento', 'lenta', 'roto', 'rota', 'danado',
+    'danada', 'estafa', 'peor', 'sucio', 'sucia', 'falso', 'falsa', 'problema', 'impuntual',
+}
+NEGATIONS = {'not', 'no', 'never', 'dont', 'didnt', 'wasnt', 'isnt', 'nunca', 'tampoco'}
+STOPWORDS = {
+    'the', 'and', 'was', 'were', 'very', 'with', 'for', 'that', 'this', 'but', 'are', 'you', 'they',
+    'has', 'had', 'have', 'from', 'all', 'its', 'our', 'his', 'her', 'she', 'him', 'item',
+    'una', 'uno', 'los', 'las', 'del', 'que', 'muy', 'con', 'por', 'para', 'fue', 'pero', 'como',
+    'todo', 'esta', 'este', 'era', 'son', 'mas', 'sus',
+}
+TOP_WORDS = 10
+
+
+def _words(text):
+    # minúsculas y sin tildes: "Rápido" y "rapido" cuentan como la misma palabra
+    plain = unicodedata.normalize('NFKD', text.lower()).encode('ascii', 'ignore').decode()
+    return re.findall(r'[a-z]+', plain.replace("'", ''))
+
+
+def classify_review(text):
+    words = _words(text)
+    score = 0
+    for i, word in enumerate(words):
+        value = 1 if word in POSITIVE_WORDS else -1 if word in NEGATIVE_WORDS else 0
+        if value and i > 0 and words[i - 1] in NEGATIONS:
+            value = -value
+        score += value
+    if score > 0:
+        return 'positive'
+    if score < 0:
+        return 'negative'
+    return 'neutral'
+
+
+def _stars_sentiment(stars):
+    if stars >= 4:
+        return 'positive'
+    if stars <= 2:
+        return 'negative'
+    return 'neutral'
+
+
+def summarize_review_sentiment(ratings):
+    counts = {s: 0 for s in SENTIMENTS}
+    stars = {s: [] for s in SENTIMENTS}
+    keywords = {s: Counter() for s in SENTIMENTS}
+    tags = Counter()
+    total = 0
+    agree = 0
+
+    for rating in ratings:
+        total += 1
+        tags.update(rating['tags'] or [])
+        text = (rating['review'] or '').strip()
+        if not text:
+            continue  # solo estrellas y tags: no hay texto que clasificar
+        sentiment = classify_review(text)
+        counts[sentiment] += 1
+        stars[sentiment].append(rating['stars'])
+        keywords[sentiment].update(
+            w for w in _words(text) if len(w) >= 3 and w not in STOPWORDS and w not in NEGATIONS
+        )
+        if _stars_sentiment(rating['stars']) == sentiment:
+            agree += 1
+
+    with_text = sum(counts.values())
+    return {
+        'ratings_total': total,
+        'reviews_with_text': with_text,
+        'sentiment': counts,
+        'average_stars': {s: round(sum(v) / len(v), 2) if v else None for s, v in stars.items()},
+        # de las reseñas con texto, cuántas dicen lo mismo que sus estrellas
+        'agreement_with_stars': round(agree / with_text, 4) if with_text else 0.0,
+        'top_keywords': {
+            s: [{'word': w, 'count': c} for w, c in keywords[s].most_common(TOP_WORDS)] for s in SENTIMENTS
+        },
+        'top_tags': [{'tag': t, 'count': c} for t, c in tags.most_common()],
+    }
+
+
+def review_sentiment(request):
+    ratings = Rating.objects.values('stars', 'tags', 'review')
+    return JsonResponse(summarize_review_sentiment(ratings))
 # Dashboard
 # One entry per implemented business question; the sidebar, the overview and each question page read from here.
 DASHBOARD_QUESTIONS = [
@@ -445,7 +546,12 @@ DASHBOARD_QUESTIONS = [
         'question': 'Which specific campus locations (visualized as a heat map) are most frequently used for item exchanges, and how does this density shift during different hours of the day?',
         'endpoint': 'meeting-point-usage',
     },
-]
+    {
+        'number': 14,
+        'title': 'Review sentiment',
+        'question': 'What is the emotional sentiment (positive, neutral, negative) and the most common keywords found in the written reviews left for buyers and sellers?',
+        'endpoint': 'review-sentiment',
+    },]
 
 
 def _dashboard_context(current=None):
