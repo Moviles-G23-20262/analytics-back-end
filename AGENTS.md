@@ -33,7 +33,10 @@ uv run python manage.py test
 | `/analytics/categories/` | 6 | done |
 | `/analytics/wishlist-conversion/` | 7 | done |
 | `/analytics/meeting-points/` (optional `?hour=0-23`) | 12 | done |
-| (none yet) | 8, 9, 10, 11 | `# TODO: implement` placeholders in `views.py` |
+| `/analytics/empty-fields/` | 8 | done |
+| `/analytics/price-variation/` | 9 | done (asking prices of the same item; `/analytics/price-stats/` keeps the completed-sale ranges for the price suggestion) |
+| `/analytics/time-to-sell/` | 11 | done |
+| (none yet) | 10 | `# TODO: implement` placeholder in `views.py` |
 | (none yet) | 3, 13, 14 | not started; 3 and 13 are only partly answerable by SQL |
 | Firebase Crashlytics console | 1 | outside this service |
 

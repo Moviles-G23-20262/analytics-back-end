@@ -22,7 +22,7 @@ class DashboardPagesTests(SimpleTestCase):
                 self.assertContains(response, reverse(q['endpoint']))
 
     def test_unimplemented_questions_have_no_page(self):
-        for number in [1, 3, 8, 9, 10, 11, 13, 14]:
+        for number in [1, 3, 10, 13, 14]:
             with self.subTest(bq=number):
                 self.assertEqual(self.client.get(f'/dash-board/bq{number}/').status_code, 404)
 

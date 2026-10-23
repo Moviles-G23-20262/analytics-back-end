@@ -26,6 +26,7 @@ class MaterialCategory(models.TextChoices):
 
 class NotificationType(models.TextChoices):
     SMART_MATCH = 'SMART_MATCH', 'Smart Match'
+    ORDER_PLACED = 'ORDER_PLACED', 'Order Placed'
     OTHER = 'OTHER', 'Other'
 
 class ExchangeStatus(models.TextChoices):
@@ -47,6 +48,10 @@ class AnalyticsEventType(models.TextChoices):
     WISHLIST_REMOVE = 'WISHLIST_REMOVE', 'Wishlist Remove'
     NOTIFICATION_SENT = 'NOTIFICATION_SENT', 'Notification Sent'
     NOTIFICATION_OPENED = 'NOTIFICATION_OPENED', 'Notification Opened'
+    SMART_MATCH_SHOWN = 'SMART_MATCH_SHOWN', 'Smart Match Shown'
+    SMART_MATCH_OPENED = 'SMART_MATCH_OPENED', 'Smart Match Opened'
+    SMART_MATCH_RESERVED = 'SMART_MATCH_RESERVED', 'Smart Match Reserved'
+    EXCHANGE_CONFIRMED = 'EXCHANGE_CONFIRMED', 'Exchange Confirmed'
     MEETING_CONFIRMED = 'MEETING_CONFIRMED', 'Meeting Confirmed'
 
 # ==========================================
