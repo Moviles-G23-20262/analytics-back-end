@@ -609,6 +609,114 @@ def time_to_sell(request):
     )
     return JsonResponse(summarize_time_to_sell(sales))
 
+def calculate_time_to_sold_metrics(sales_records):
+    """
+    Computes time-to-sold metrics for published materials.
+    sales_records is an iterable of dicts with:
+      - 'material_id': str/UUID
+      - 'category': str (MaterialCategory value)
+      - 'listed_at': datetime
+      - 'sold_at': datetime
+    """
+    durations_by_category = {}
+    all_days = []
+
+    buckets = {
+        '< 1 day': 0,
+        '1 - 3 days': 0,
+        '3 - 7 days': 0,
+        '7 - 14 days': 0,
+        '14 - 30 days': 0,
+        '> 30 days': 0,
+    }
+
+    for record in sales_records:
+        listed = record.get('listed_at')
+        sold = record.get('sold_at')
+        if not listed or not sold:
+            continue
+        days = max(0.0, (sold - listed).total_seconds() / 86400.0)
+        category = record.get('category') or 'OTHER'
+
+        all_days.append(days)
+        durations_by_category.setdefault(category, []).append(days)
+
+        if days < 1:
+            buckets['< 1 day'] += 1
+        elif days <= 3:
+            buckets['1 - 3 days'] += 1
+        elif days <= 7:
+            buckets['3 - 7 days'] += 1
+        elif days <= 14:
+            buckets['7 - 14 days'] += 1
+        elif days <= 30:
+            buckets['14 - 30 days'] += 1
+        else:
+            buckets['> 30 days'] += 1
+
+    by_category = []
+    for cat, cat_days in durations_by_category.items():
+        by_category.append({
+            'category': cat,
+            'total_sold': len(cat_days),
+            **_describe(cat_days),
+        })
+
+    by_category.sort(key=lambda c: (-c['total_sold'], c['mean']))
+
+    fastest_category = min(by_category, key=lambda c: c['mean'])['category'] if by_category else None
+    slowest_category = max(by_category, key=lambda c: c['mean'])['category'] if by_category else None
+
+    return {
+        'total_sold_items': len(all_days),
+        'overall': _describe(all_days),
+        'distribution': [
+            {'range': r, 'count': count}
+            for r, count in buckets.items()
+        ],
+        'by_category': by_category,
+        'fastest_category': fastest_category,
+        'slowest_category': slowest_category,
+    }
+
+
+def time_to_sold(request):
+    """
+    BQ 11: What is the average time (in days) it takes for a newly listed academic item to be marked as sold?
+    """
+    category = request.GET.get('category')
+    if category is not None and category not in MaterialCategory.values:
+        return JsonResponse({'error': 'category must be a valid MaterialCategory'}, status=400)
+
+    try:
+        exchanges = (
+            Exchange.objects
+            .filter(status=ExchangeStatus.COMPLETED, completed_at__isnull=False, material__isnull=False)
+            .values('material_id', 'material__category', 'material__created_at', 'completed_at')
+        )
+        if category:
+            exchanges = exchanges.filter(material__category=category)
+
+        sales_data = [
+            {
+                'material_id': str(row['material_id']),
+                'category': row['material__category'],
+                'listed_at': row['material__created_at'],
+                'sold_at': row['completed_at'],
+            }
+            for row in exchanges
+            if row['material__created_at'] and row['completed_at']
+        ]
+    except (ProgrammingError, DataError) as err:
+        logger.warning('Could not query time-to-sold data: %s', err)
+        return JsonResponse({'error': 'Failed to query sales data', 'available': False}, status=500)
+
+    result = calculate_time_to_sold_metrics(sales_data)
+    result['available'] = True
+    if category:
+        result['filtered_category'] = category
+    return JsonResponse(result)
+
 
 class CampusHour(Func):
     template = f"EXTRACT(HOUR FROM %(expressions)s AT TIME ZONE 'UTC' AT TIME ZONE '{CAMPUS_TIME_ZONE}')::int"
