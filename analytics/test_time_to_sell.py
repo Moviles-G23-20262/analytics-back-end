@@ -55,3 +55,29 @@ class SummarizeTimeToSellTestCase(SimpleTestCase):
 
         self.assertEqual([c['category'] for c in result['by_category']], ['CALCULATORS', 'FURNITURE'])
         self.assertEqual(result['by_category'][0]['median_days'], 3.0)
+
+class TimeToSellViewTestCase(SimpleTestCase):
+
+    def test_view_returns_expected_json(self):
+        from unittest.mock import patch
+        import json
+        with patch('analytics.views.Exchange.objects') as manager:
+            manager.filter.return_value.values.return_value = [
+                {'category': 'BOOKS', 'listed_at': LISTED, 'completed_at': LISTED + timedelta(days=2)},
+            ]
+            response = self.client.get('/analytics/time-to-sell/')
+            self.assertEqual(response.status_code, 200)
+            data = json.loads(response.content)
+            self.assertEqual(data['sold_listings'], 1)
+            self.assertEqual(data['days_to_sell']['mean'], 2.0)
+
+    def test_view_alias_time_to_sold(self):
+        from unittest.mock import patch
+        import json
+        with patch('analytics.views.Exchange.objects') as manager:
+            manager.filter.return_value.values.return_value = []
+            response = self.client.get('/analytics/time-to-sold/')
+            self.assertEqual(response.status_code, 200)
+            data = json.loads(response.content)
+            self.assertEqual(data['sold_listings'], 0)
+

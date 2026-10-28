@@ -8,6 +8,7 @@ urlpatterns = [
     path('empty-fields/', views.empty_fields, name='empty-fields'),
     path('price-variation/', views.price_variation, name='price-variation'),
     path('time-to-sell/', views.time_to_sell, name='time-to-sell'),
+    path('time-to-sold/', views.time_to_sell, name='time-to-sold'),
     path('meeting-points/', views.meeting_point_usage, name='meeting-point-usage'),
     path('buyer-journey-funnel/', views.buyer_journey_funnel, name='buyer-journey-funnel'),
     path('price-stats/', views.price_stats, name='price-stats'),
