@@ -37,7 +37,7 @@ uv run python manage.py test
 | `/analytics/empty-fields/` | 8 | done |
 | `/analytics/price-variation/` | 9 | done (asking prices of the same item; `/analytics/price-stats/` keeps the completed-sale ranges for the price suggestion) |
 | `/analytics/time-to-sell/` | 11 | done |
-| `/analytics/average-ticket/` | 8 (average ticket) | done (`{globalAverage, byCondition}` in COP over completed exchanges, joined with `Material.condition`; sits next to the empty-fields BQ8) |
+| `/analytics/average-ticket/` | 14 | done (average ticket: `{globalAverage, byCondition}` in COP over completed exchanges, joined with `Material.condition`) |
 | (none yet) | 10 | `# TODO: implement` placeholder in `views.py` |
 | (none yet) | 3, 13, 14 | not started; 3 and 13 are only partly answerable by SQL |
 | Firebase Crashlytics console | 1 | outside this service |

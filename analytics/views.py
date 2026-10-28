@@ -609,7 +609,7 @@ def time_to_sell(request):
     )
     return JsonResponse(summarize_time_to_sell(sales))
 
-# Average ticket (requested as BQ8): what a completed sale is worth, overall and per item condition.
+# Business Question 14 - Average ticket: what a completed sale is worth, overall and per item condition.
 
 def _pesos(total, sales):
     return int(round(float(total) / sales)) if sales else None
