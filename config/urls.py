@@ -31,6 +31,7 @@ def api_root(request):
             "empty_fields": "/analytics/empty-fields/",
             "price_variation": "/analytics/price-variation/",
             "time_to_sell": "/analytics/time-to-sell/",
+            "average_ticket": "/analytics/average-ticket/",
             "meeting_points": "/analytics/meeting-points/",
             "buyer_journey_funnel": "/analytics/buyer-journey-funnel/",
             "chat_to_meeting_point": "/analytics/chat-to-meeting-point/",

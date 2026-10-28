@@ -11,7 +11,7 @@ import logging
 
 from django.db import DataError, ProgrammingError
 from django.db import ProgrammingError
-from django.db.models import Count, F, Func, IntegerField, Q
+from django.db.models import Count, F, Func, IntegerField, Q, Sum
 from django.db.models.functions import ExtractHour, ExtractWeekDay
 from .models import Material, AnalyticsEvent, AnalyticsEventType
 from .models import Exchange, Notification, NotificationType, WishlistItem
@@ -608,6 +608,39 @@ def time_to_sell(request):
         'completed_at', category=F('material__category'), listed_at=F('material__created_at'),
     )
     return JsonResponse(summarize_time_to_sell(sales))
+
+# Average ticket (requested as BQ8): what a completed sale is worth, overall and per item condition.
+
+def _pesos(total, sales):
+    return int(round(float(total) / sales)) if sales else None
+
+def summarize_average_ticket(groups):
+    #groups: una fila por condicion con la suma de precios y cuantas ventas tiene
+    total = sum(float(g['total'] or 0) for g in groups)
+    sales = sum(g['sales'] for g in groups)
+    by_condition = {
+        g['condition']: _pesos(g['total'], g['sales'])
+        for g in groups
+        if g['condition'] is not None and g['sales']
+    }
+    #mismo orden que MaterialCondition (de mejor a peor estado)
+    order = {value: i for i, value in enumerate(MaterialCondition.values)}
+    return {
+        'globalAverage': _pesos(total, sales),
+        'byCondition': dict(sorted(by_condition.items(), key=lambda kv: order.get(kv[0], len(order)))),
+    }
+
+def completed_sales_by_condition():
+    #JOIN Exchange -> Material (INNER, por materialId) y GROUP BY Material.condition, solo ventas completadas
+    return (
+        Exchange.objects.filter(status=ExchangeStatus.COMPLETED)
+        .values(condition=F('material__condition'))
+        .annotate(total=Sum('price'), sales=Count('id'))
+        .order_by()
+    )
+
+def average_ticket(request):
+    return JsonResponse(summarize_average_ticket(list(completed_sales_by_condition())))
 
 
 class CampusHour(Func):
