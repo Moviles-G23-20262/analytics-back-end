@@ -183,6 +183,10 @@ class AnalyticsEvent(models.Model):
     event_type = models.CharField(max_length=50, choices=AnalyticsEventType.choices, db_column='eventType')
     metadata = models.JSONField(null=True, blank=True)
     occurred_at = models.DateTimeField(db_column='occurredAt')
+    # Set for events the app queued offline: the UUID the phone made (unique, so a retry never
+    # duplicates a row) and when the phone really created the event.
+    client_id = models.UUIDField(null=True, blank=True, unique=True, db_column='clientId')
+    client_created_at = models.DateTimeField(null=True, blank=True, db_column='clientCreatedAt')
 
     class Meta:
         managed = False

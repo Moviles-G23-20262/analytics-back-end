@@ -347,6 +347,46 @@ def chat_to_meeting_point(request):
     return JsonResponse(result)
 
 
+def calculate_chat_agreement(message_times, confirmed_at):
+    """BQ4 for one chat: how many messages it took, and how long, until the meeting was confirmed.
+
+    `confirmed_at` comes from the MEETING_CONFIRMED event (the phone's clientCreatedAt). Only the
+    messages sent up to that moment count. Returns None when the chat has none of them.
+    """
+    sent = sorted(t for t in message_times if t <= confirmed_at)
+    if not sent:
+        return None
+    minutes = max(0.0, (confirmed_at - sent[0]).total_seconds() / 60)
+    return {'messagesToAgreement': len(sent), 'timeToAgreement': round(minutes, 4)}
+
+def first_confirmation(events):
+    """When the chat first agreed on a meeting: the earliest MEETING_CONFIRMED, by the time the
+    phone created it (clientCreatedAt), falling back to when the server stored it."""
+    times = [e['client_created_at'] or e['occurred_at'] for e in events]
+    return min(times) if times else None
+
+def chat_agreement(request, chat_room_id):
+    """GET /analytics/chat-agreement/<chatRoomId>/ -> {"messagesToAgreement": N, "timeToAgreement": minutes}."""
+    try:
+        events = list(AnalyticsEvent.objects.filter(
+            event_type=AnalyticsEventType.MEETING_CONFIRMED,
+            metadata__chatRoomId=str(chat_room_id),
+        ).values('client_created_at', 'occurred_at'))
+    except (DataError, ProgrammingError):
+        logger.warning('MEETING_CONFIRMED is not in the AnalyticsEventType enum yet')
+        events = []
+
+    confirmed_at = first_confirmation(events)
+    if confirmed_at is None:
+        return JsonResponse({'error': 'No confirmed meeting for this chat'}, status=404)
+
+    message_times = Message.objects.filter(chat_room_id=chat_room_id).values_list('created_at', flat=True)
+    result = calculate_chat_agreement(list(message_times), confirmed_at)
+    if result is None:
+        return JsonResponse({'error': 'This chat has no messages before the confirmation'}, status=404)
+    return JsonResponse(result)
+
+
 # Business Question 8
 # Field of the listing form -> (label, categories where it applies). None = every category.
 # Edition only makes sense for books and model for devices, so a calculator without an edition is not "empty".

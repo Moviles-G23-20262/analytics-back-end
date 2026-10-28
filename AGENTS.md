@@ -29,6 +29,7 @@ uv run python manage.py test
 |---|---|---|
 | `/analytics/buyer-journey-funnel/` | 2 | done |
 | `/analytics/chat-to-meeting-point/` | 4 | done |
+| `/analytics/chat-agreement/<chatRoomId>/` | 4 | done (one chat: `{messagesToAgreement, timeToAgreement}` in minutes, from its first `MEETING_CONFIRMED` event's `clientCreatedAt`) |
 | `/analytics/activity-times/` | 5 | done |
 | `/analytics/categories/` | 6 | done |
 | `/analytics/wishlist-conversion/` | 7 | done |
