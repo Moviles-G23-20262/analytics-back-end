@@ -1,0 +1,87 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ11 · Time to sell{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">From listing to sale</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>How long items take to sell</h2>
+    <p class="sub">Sold listings grouped by the time between publishing and the completed exchange.</p>
+    <div class="chart-box"><canvas id="c-histogram" role="img" aria-label="Sold listings by time to sell"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>By category</h2>
+    <p class="sub">Average and median days to sell, fastest category first.</p>
+    <div class="chart-box"><canvas id="c-category" role="img" aria-label="Days to sell per category"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>An item is <strong>sold</strong> when its exchange has status <code>COMPLETED</code>. Pending and cancelled exchanges are not counted.</li>
+    <li><strong>Time to sell</strong> is <code>Exchange.completedAt</code> minus <code>Material.createdAt</code>, in days with decimals (12 hours = 0.5 days).</li>
+    <li>Exchanges without a completion date, or completed before the listing was created (seeded or edited data), are skipped and counted apart.</li>
+    <li>The average is pulled up by a few slow sales; the median is the typical case.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const fmtDays = v => fmtMinutes(v * 1440);
+function render(d) {
+  setAnswer(HEADLINES[11](d));
+  const s = d.days_to_sell;
+
+  tiles('tiles', [
+    { label: 'Sold listings', value: nf.format(d.sold_listings), hint: d.skipped ? plural(d.skipped, 'exchange') + ' skipped' : '' },
+    { label: 'Average time to sell', value: d.sold_listings ? fmtDays(s.mean) : '–' },
+    { label: 'Median time to sell', value: d.sold_listings ? fmtDays(s.median) : '–' },
+    { label: 'Slowest sale', value: d.sold_listings ? fmtDays(s.max) : '–' },
+  ]);
+
+  draw('c-histogram', {
+    type: 'bar',
+    data: { labels: d.histogram.map(b => b.bucket), datasets: [bar('Sold listings', d.histogram.map(b => b.sold), 1)] },
+    options: baseOptions({ legend: false, counts: true }),
+  });
+
+  const cats = d.by_category;
+  draw('c-category', {
+    type: 'bar',
+    data: {
+      labels: cats.map(c => prettify(c.category)),
+      datasets: [bar('Median days', cats.map(c => +c.median_days.toFixed(1)), 1), bar('Average days', cats.map(c => +c.mean_days.toFixed(1)), 2)],
+    },
+    options: baseOptions({
+      horizontal: true,
+      plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtDays(c.parsed.x)}`, afterBody: cs => plural(cats[cs[0].dataIndex].sold, 'sale') } } },
+    }),
+  });
+
+  const list = [];
+  if (d.sold_listings) {
+    const sold = d.sold_listings;
+    const fast = d.histogram.slice(0, 3).reduce((a, b) => a + b.sold, 0);
+    list.push(`${strong(fmtPct(ratioPct(fast, sold)))} of sold items sold within a week (${nf.format(fast)} of ${nf.format(sold)}).`);
+    if (s.mean > s.median * 1.5) list.push(`The average (${fmtDays(s.mean)}) is well above the median (${fmtDays(s.median)}): a few slow sales stretch it, so the median is the better expectation for a new seller.`);
+    if (cats.length >= 2) list.push(`${strong(prettify(cats[0].category))} sells fastest (median ${fmtDays(cats[0].median_days)}) and ${strong(prettify(cats[cats.length - 1].category))} slowest (median ${fmtDays(cats[cats.length - 1].median_days)}).`);
+    const slow = d.histogram[d.histogram.length - 1];
+    if (slow.sold) list.push(`${plural(slow.sold, 'item')} took more than a month to sell.`);
+    if (sold < 20) list.push(`Only ${plural(sold, 'completed sale')} so far: expect these numbers to move.`);
+  }
+  insights('insights', list);
+
+  table('t-data', ['Category', 'Sold', 'Average (days)', 'Median (days)'], cats.map(c => [prettify(c.category), c.sold, nf1.format(c.mean_days), nf1.format(c.median_days)]));
+}
+start(render);
+</script>
+{% endblock %}

@@ -175,6 +175,23 @@ const HEADLINES = {
     if (!d.items_with_smart_match) return `${strong(nf.format(d.buyers_with_wishlist))} buyers saved ${strong(nf.format(d.wishlist_items))} items, but none received a Smart Match yet.`;
     return `${strong(fmtPct(d.conversion_rate * 100))} of wishlist items that got a Smart Match were bought afterwards (${nf.format(d.purchased_after_smart_match)} of ${nf.format(d.items_with_smart_match)}), from ${nf.format(d.buyers_with_wishlist)} buyers.`;
   },
+  8(d) {
+    if (!d.total_listings) return 'No listings yet.';
+    const worst = d.fields.find(f => f.listings && f.empty);
+    if (!worst) return `All ${plural(d.total_listings, 'listing')} have every field that applies to them filled in.`;
+    return `${strong(worst.label)} is the field sellers leave empty most often (${strong(fmtPct(worst.empty_rate * 100))} of ${plural(worst.listings, 'listing')}); ` +
+      `${fmtPct(ratioPct(d.complete_listings, d.total_listings))} of listings are complete.`;
+  },
+  9(d) {
+    if (!d.listings) return 'No priced listings yet.';
+    if (!d.items_compared) return `${plural(d.listings, 'listing')}, but no item has been listed more than once yet.`;
+    return `The same item is listed with a median spread of ${strong(fmtPct(d.median_spread_pct))} between its cheapest and most expensive listing, across ${plural(d.items_compared, 'item')} listed more than once.`;
+  },
+  11(d) {
+    if (!d.sold_listings) return 'No listing has been sold yet.';
+    const days = v => nf1.format(v) + (v === 1 ? ' day' : ' days');
+    return `A listed item takes ${strong(days(d.days_to_sell.mean))} on average to sell (median ${strong(days(d.days_to_sell.median))}), over ${plural(d.sold_listings, 'completed sale')}.`;
+  },
   12(d) {
     if (d.available === false) return 'Meeting point data is not available yet.';
     if (!d.data.length) return 'No completed exchange with a meeting point yet.';
@@ -183,14 +200,19 @@ const HEADLINES = {
     const all = total(points.map(p => p.total));
     return `${strong(points[0].name)} is the busiest meeting point (${nf.format(points[0].total)} of ${plural(all, 'exchange')}), and exchanges peak at ${strong(hourLabel(argMax(hours)))} (campus time).`;
   },
-
-    14(d) {
+  14(d) {
     if (!d.ratings_total) return 'No ratings yet.';
     if (!d.reviews_with_text) return `${plural(d.ratings_total, 'rating')}, but none has a written review yet.`;
     const s = d.sentiment, n = d.reviews_with_text;
     const complaint = d.top_keywords.negative[0];
     return `${strong(fmtPct(ratioPct(s.positive, n)))} of written reviews are positive, ${strong(fmtPct(ratioPct(s.neutral, n)))} neutral and ${strong(fmtPct(ratioPct(s.negative, n)))} negative` +
       (complaint ? `; the most repeated word in negative reviews is ${strong(complaint.word)}.` : '.');
+  },
+  13(d) {
+    if (!d.conversations_analyzed) return 'No chat has ended in a cancelled or abandoned exchange yet.';
+    if (!d.words.length) return `${plural(d.conversations_analyzed, 'chat')} fell through, but no word repeats in ${d.min_conversations} of them yet.`;
+    const top = d.words.slice(0, 3).map(w => strong(w.word)).join(', ');
+    return `Right before a deal falls through, students write ${top} the most (last ${d.last_messages} messages of ${plural(d.conversations_analyzed, 'cancelled or abandoned chat')}).`;
   },
 };
 

@@ -1,0 +1,91 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ8 · Empty listing fields{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">Which fields are left empty</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Empty rate per field</h2>
+    <p class="sub">Share of the listings that could fill the field and left it empty, highest first.</p>
+    <div class="chart-box tall"><canvas id="c-rate" role="img" aria-label="Empty rate per listing form field"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Empty fields by category</h2>
+    <p class="sub">How many listings of each category left the three most skipped fields empty.</p>
+    <div class="chart-box tall"><canvas id="c-category" role="img" aria-label="Empty fields per category"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>Every listing (<code>Material</code>) counts, whatever its status. <strong>Faculty</strong> comes from the seller's profile (<code>User.faculty</code>).</li>
+    <li>A field is <strong>empty</strong> when it is null, only blank spaces, or (for photos) an empty list.</li>
+    <li><strong>Edition</strong> only applies to books and <strong>model</strong> only to calculators and lab equipment. Listings of other categories are not counted for those fields, so a calculator without an edition is not a gap.</li>
+    <li>The <strong>empty rate</strong> is empty listings divided by the listings the field applies to. A <strong>complete listing</strong> has every field that applies to it filled in.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  setAnswer(HEADLINES[8](d));
+  const fields = d.fields.filter(f => f.listings);
+  const worst = fields[0];
+
+  tiles('tiles', [
+    { label: 'Listings', value: nf.format(d.total_listings) },
+    { label: 'Complete listings', value: fmtPct(ratioPct(d.complete_listings, d.total_listings)), hint: `${nf.format(d.complete_listings)} of ${nf.format(d.total_listings)}` },
+    { label: 'Most skipped field', value: worst && worst.empty ? esc(worst.label) : '–', hint: worst && worst.empty ? fmtPct(worst.empty_rate * 100) + ' empty' : '' },
+    { label: 'Fields tracked', value: nf.format(d.fields.length) },
+  ]);
+
+  draw('c-rate', {
+    type: 'bar',
+    data: { labels: fields.map(f => f.label), datasets: [bar('Empty rate', fields.map(f => +(f.empty_rate * 100).toFixed(1)), 2)] },
+    options: baseOptions({
+      legend: false,
+      horizontal: true,
+      plugins: { tooltip: { callbacks: { label: c => fmtPct(c.parsed.x), afterLabel: c => `${nf.format(fields[c.dataIndex].empty)} of ${nf.format(fields[c.dataIndex].listings)} listings` } } },
+      scales: axes({ horizontal: true, x: { max: 100, ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  const categories = d.by_category.map(r => prettify(r.category));
+  draw('c-category', {
+    type: 'bar',
+    data: {
+      labels: categories,
+      datasets: d.fields.filter(f => f.empty).slice(0, 3).map((f, i) => bar(f.label, d.by_category.map(r => r.empty[f.field] || 0), i + 1, { stack: 'empty' })),
+    },
+    options: baseOptions({ horizontal: true, counts: true, scales: axes({ horizontal: true, counts: true, x: { stacked: true }, y: { stacked: true } }) }),
+  });
+
+  const list = [];
+  if (d.total_listings) {
+    if (worst && worst.empty) list.push(`${strong(worst.label)} is the field sellers skip the most: ${strong(fmtPct(worst.empty_rate * 100))} of the listings it applies to leave it empty (${nf.format(worst.empty)} of ${nf.format(worst.listings)}).`);
+    const never = fields.filter(f => !f.empty).map(f => f.label);
+    if (never.length) list.push(`Always filled in: ${never.map(strong).join(', ')}.`);
+    const course = fields.find(f => f.field === 'course_code');
+    if (course && course.empty_rate >= 0.3) list.push(`${fmtPct(course.empty_rate * 100)} of listings have no course, so they never show up when a buyer filters by course code.`);
+    const faculty = fields.find(f => f.field === 'faculty');
+    if (faculty && faculty.empty_rate >= 0.3) list.push(`${fmtPct(faculty.empty_rate * 100)} of listings come from sellers without a faculty in their profile; taking it from registration would fill it automatically.`);
+    if (d.complete_listings < d.total_listings) list.push(`Only ${strong(fmtPct(ratioPct(d.complete_listings, d.total_listings)))} of listings have every field that applies to them.`);
+    if (d.total_listings < 20) list.push(`Only ${plural(d.total_listings, 'listing')} so far: the rates will move a lot as more are published.`);
+  }
+  insights('insights', list);
+
+  table('t-data', ['Field', 'Applies to', 'Listings', 'Empty', 'Empty rate (%)'],
+    d.fields.map(f => [f.label, f.applies_to ? f.applies_to.map(prettify).join(', ') : 'All', f.listings, f.empty, nf1.format(f.empty_rate * 100)]));
+}
+start(render);
+</script>
+{% endblock %}

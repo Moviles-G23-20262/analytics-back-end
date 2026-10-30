@@ -29,12 +29,18 @@ uv run python manage.py test
 |---|---|---|
 | `/analytics/buyer-journey-funnel/` | 2 | done |
 | `/analytics/chat-to-meeting-point/` | 4 | done |
+| `/analytics/chat-agreement/<chatRoomId>/` | 4 | done (one chat: `{messagesToAgreement, timeToAgreement}` in minutes, from its first `MEETING_CONFIRMED` event's `clientCreatedAt`) |
 | `/analytics/activity-times/` | 5 | done |
 | `/analytics/categories/` | 6 | done |
 | `/analytics/wishlist-conversion/` | 7 | done |
 | `/analytics/meeting-points/` (optional `?hour=0-23`) | 12 | done |
-| (none yet) | 8, 9, 10, 11 | `# TODO: implement` placeholders in `views.py` |
-| (none yet) | 3, 13, 14 | not started; 3 and 13 are only partly answerable by SQL |
+| `/analytics/empty-fields/` | 8 | done |
+| `/analytics/price-variation/` | 9 | done (asking prices of the same item; `/analytics/price-stats/` keeps the completed-sale ranges for the price suggestion) |
+| `/analytics/time-to-sell/` | 11 | done |
+| `/analytics/average-ticket/` | 14 | done (average ticket: `{globalAverage, byCondition}` in COP over completed exchanges, joined with `Material.condition`) |
+| (none yet) | 10 | `# TODO: implement` placeholder in `views.py` |
+| `/analytics/failed-chat-words/` | 13 | done (word cloud of the last 10 messages of cancelled or abandoned chats, compared with chats that ended in a sale; words used in fewer than 2 chats are hidden) |
+| (none yet) | 3 | not started; only partly answerable by SQL |
 | Firebase Crashlytics console | 1 | outside this service |
 
 `business_questions_feasibility.md` states what the data can and cannot answer. Also check `Business-Questions.md` to know what a business question actually is.
@@ -52,7 +58,7 @@ uv run python manage.py test
 After any change to `../campus-swap-backend/prisma/schema.prisma`, update `analytics/models.py` the same way: same column name via `db_column`, same enum values, same nullability. Known drift at the time of writing:
 
 - `Exchange.material` is a `OneToOneField`, but a material can now have several exchanges, so it should be a `ForeignKey` (the `Material.exchange` reverse accessor, used by BQ6, would then become a different one).
-- `Exchange` is missing `orderNumber`, `createdAt`, `cancelledAt`, `receivedCondition`, `meetingStartsAt`, `meetingEndsAt`; `Message` is missing `type` and `meetingProposalId`.
+- `Exchange` is missing `orderNumber`, `createdAt`, `receivedCondition`, `meetingStartsAt`, `meetingEndsAt`; `Message` is missing `meetingProposalId`. (`Exchange.cancelledAt` and `Message.type` were added for BQ13.)
 - No models yet for `Rating`, `MeetingProposal` or `ScheduleBlock`; `NotificationType` lacks `ORDER_PLACED`.
 - `AnalyticsEventType.MEETING_CONFIRMED` exists here but not in the Prisma enum; BQ4 already tolerates its absence and falls back to completed exchanges with a meeting point.
 
@@ -62,4 +68,4 @@ Views already guard against a missing column or enum value with `try/except Prog
 
 - The analytics endpoints have no authentication. Anyone who can reach the service can read the aggregates. Decide whether to add a shared key or session before the dashboard is deployed publicly.
 - Nothing in the code uses a read-only database role (see the design decisions above).
-- The dashboard covers only the implemented questions (2, 4, 5, 6, 7, 12). The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.
+- The dashboard covers only the implemented questions (2, 4, 5, 6, 7, 8, 9, 11, 12, 13). The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.

@@ -26,12 +26,17 @@ class MaterialCategory(models.TextChoices):
 
 class NotificationType(models.TextChoices):
     SMART_MATCH = 'SMART_MATCH', 'Smart Match'
+    ORDER_PLACED = 'ORDER_PLACED', 'Order Placed'
     OTHER = 'OTHER', 'Other'
 
 class ExchangeStatus(models.TextChoices):
     PENDING = 'PENDING', 'Pending'
     COMPLETED = 'COMPLETED', 'Completed'
     CANCELLED = 'CANCELLED', 'Cancelled'
+
+class MessageType(models.TextChoices):
+    TEXT = 'TEXT', 'Text'
+    MEETING = 'MEETING', 'Meeting'
 
 class MeetingZoneType(models.TextChoices):
     LIBRARY = 'LIBRARY', 'Library'
@@ -47,6 +52,10 @@ class AnalyticsEventType(models.TextChoices):
     WISHLIST_REMOVE = 'WISHLIST_REMOVE', 'Wishlist Remove'
     NOTIFICATION_SENT = 'NOTIFICATION_SENT', 'Notification Sent'
     NOTIFICATION_OPENED = 'NOTIFICATION_OPENED', 'Notification Opened'
+    SMART_MATCH_SHOWN = 'SMART_MATCH_SHOWN', 'Smart Match Shown'
+    SMART_MATCH_OPENED = 'SMART_MATCH_OPENED', 'Smart Match Opened'
+    SMART_MATCH_RESERVED = 'SMART_MATCH_RESERVED', 'Smart Match Reserved'
+    EXCHANGE_CONFIRMED = 'EXCHANGE_CONFIRMED', 'Exchange Confirmed'
     MEETING_CONFIRMED = 'MEETING_CONFIRMED', 'Meeting Confirmed'
 
 # ==========================================
@@ -107,6 +116,7 @@ class Message(models.Model):
     chat_room = models.ForeignKey(ChatRoom, on_delete=models.DO_NOTHING, db_column='chatRoomId', related_name='messages')
     sender = models.ForeignKey(User, on_delete=models.DO_NOTHING, db_column='senderId', related_name='sent_messages')
     content = models.TextField()
+    type = models.CharField(max_length=20, choices=MessageType.choices, default=MessageType.TEXT)
     is_read = models.BooleanField(db_column='isRead', default=False)
     created_at = models.DateTimeField(db_column='createdAt')
 
@@ -138,6 +148,7 @@ class Exchange(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=ExchangeStatus.choices, default=ExchangeStatus.PENDING)
     completed_at = models.DateTimeField(db_column='completedAt', null=True, blank=True)
+    cancelled_at = models.DateTimeField(db_column='cancelledAt', null=True, blank=True)
     meeting_point = models.ForeignKey(MeetingPoint, on_delete=models.DO_NOTHING, db_column='meetingPointId', null=True, blank=True, related_name='exchanges')
     lat = models.FloatField(null=True, blank=True)
     lng = models.FloatField(null=True, blank=True)
@@ -178,6 +189,10 @@ class AnalyticsEvent(models.Model):
     event_type = models.CharField(max_length=50, choices=AnalyticsEventType.choices, db_column='eventType')
     metadata = models.JSONField(null=True, blank=True)
     occurred_at = models.DateTimeField(db_column='occurredAt')
+    # Set for events the app queued offline: the UUID the phone made (unique, so a retry never
+    # duplicates a row) and when the phone really created the event.
+    client_id = models.UUIDField(null=True, blank=True, unique=True, db_column='clientId')
+    client_created_at = models.DateTimeField(null=True, blank=True, db_column='clientCreatedAt')
 
     class Meta:
         managed = False

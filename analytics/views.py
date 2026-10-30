@@ -1,3 +1,7 @@
+import re
+import unicodedata
+from collections import Counter
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from django.http import Http404
@@ -10,16 +14,13 @@ import logging
 
 from django.db import DataError, ProgrammingError
 from django.db import ProgrammingError
-from django.db.models import Count, Func, IntegerField, Q
+from django.db.models import Count, F, Func, IntegerField, Max, Q, Sum
 from django.db.models.functions import ExtractHour, ExtractWeekDay
 from .models import Material, AnalyticsEvent, AnalyticsEventType
 from .models import Exchange, Notification, NotificationType, WishlistItem
 from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, ExchangeStatus
-from .models import ChatRoom, Message, MaterialCategory, MaterialCondition
+from .models import ChatRoom, Message, MaterialCategory, MaterialCondition, MessageType
 from .models import Rating
-import re
-import unicodedata
-from collections import Counter
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
 
@@ -350,17 +351,409 @@ def chat_to_meeting_point(request):
     return JsonResponse(result)
 
 
+def calculate_chat_agreement(message_times, confirmed_at):
+    """BQ4 for one chat: how many messages it took, and how long, until the meeting was confirmed.
+
+    `confirmed_at` comes from the MEETING_CONFIRMED event (the phone's clientCreatedAt). Only the
+    messages sent up to that moment count. Returns None when the chat has none of them.
+    """
+    sent = sorted(t for t in message_times if t <= confirmed_at)
+    if not sent:
+        return None
+    minutes = max(0.0, (confirmed_at - sent[0]).total_seconds() / 60)
+    return {'messagesToAgreement': len(sent), 'timeToAgreement': round(minutes, 4)}
+
+def first_confirmation(events):
+    """When the chat first agreed on a meeting: the earliest MEETING_CONFIRMED, by the time the
+    phone created it (clientCreatedAt), falling back to when the server stored it."""
+    times = [e['client_created_at'] or e['occurred_at'] for e in events]
+    return min(times) if times else None
+
+def chat_agreement(request, chat_room_id):
+    """GET /analytics/chat-agreement/<chatRoomId>/ -> {"messagesToAgreement": N, "timeToAgreement": minutes}."""
+    try:
+        events = list(AnalyticsEvent.objects.filter(
+            event_type=AnalyticsEventType.MEETING_CONFIRMED,
+            metadata__chatRoomId=str(chat_room_id),
+        ).values('client_created_at', 'occurred_at'))
+    except (DataError, ProgrammingError):
+        logger.warning('MEETING_CONFIRMED is not in the AnalyticsEventType enum yet')
+        events = []
+
+    confirmed_at = first_confirmation(events)
+    if confirmed_at is None:
+        return JsonResponse({'error': 'No confirmed meeting for this chat'}, status=404)
+
+    message_times = Message.objects.filter(chat_room_id=chat_room_id).values_list('created_at', flat=True)
+    result = calculate_chat_agreement(list(message_times), confirmed_at)
+    if result is None:
+        return JsonResponse({'error': 'This chat has no messages before the confirmation'}, status=404)
+    return JsonResponse(result)
+
+
 # Business Question 8
-# TODO: implement
+# Field of the listing form -> (label, categories where it applies). None = every category.
+# Edition only makes sense for books and model for devices, so a calculator without an edition is not "empty".
+LISTING_FIELDS = [
+    ('course_code', 'Course', None),
+    ('edition', 'Edition', {MaterialCategory.BOOKS}),
+    ('model_name', 'Model', {MaterialCategory.CALCULATORS, MaterialCategory.LAB_EQUIPMENT}),
+    ('condition', 'Condition', None),
+    ('description', 'Description', None),
+    ('image_urls', 'Photos', None),
+    ('faculty', 'Faculty', None),
+]
+
+def _is_empty(value):
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple)):
+        return not value
+    return False
+
+def summarize_empty_fields(listings):
+    #por campo: cuantas publicaciones lo podian llenar y cuantas lo dejaron vacio
+    applicable = {field: 0 for field, _, _ in LISTING_FIELDS}
+    empty = {field: 0 for field, _, _ in LISTING_FIELDS}
+    by_category = {}
+    complete = 0
+    total = 0
+
+    for listing in listings:
+        total += 1
+        category = listing['category']
+        row = by_category.setdefault(category, {'category': category, 'listings': 0, 'empty': {}})
+        row['listings'] += 1
+        missing_any = False
+        for field, _, categories in LISTING_FIELDS:
+            if categories is not None and category not in categories:
+                continue
+            applicable[field] += 1
+            if _is_empty(listing.get(field)):
+                empty[field] += 1
+                row['empty'][field] = row['empty'].get(field, 0) + 1
+                missing_any = True
+        if not missing_any:
+            complete += 1
+
+    fields = [
+        {
+            'field': field,
+            'label': label,
+            'applies_to': sorted(categories) if categories is not None else None,
+            'listings': applicable[field],
+            'empty': empty[field],
+            'empty_rate': round(empty[field] / applicable[field], 4) if applicable[field] else 0.0,
+        }
+        for field, label, categories in LISTING_FIELDS
+    ]
+    fields.sort(key=lambda f: (-f['empty_rate'], -f['empty'], f['field']))
+    return {
+        'total_listings': total,
+        'complete_listings': complete,
+        'fields': fields,
+        'by_category': sorted(by_category.values(), key=lambda r: (-r['listings'], r['category'])),
+    }
+
+def empty_fields(request):
+    listings = Material.objects.values(
+        'category', 'course_code', 'edition', 'model_name', 'condition', 'description', 'image_urls',
+        faculty=F('seller__faculty'),
+    )
+    return JsonResponse(summarize_empty_fields(listings))
 
 # Business Question 9
-# TODO: implement
+MAX_ITEMS_LISTED = 20
+
+def _normalize(text):
+    #"Cálculo  de Stewart, 8va." y "calculo de stewart 8va" cuentan como el mismo texto
+    plain = unicodedata.normalize('NFKD', text or '').encode('ascii', 'ignore').decode()
+    return ' '.join(''.join(c if c.isalnum() else ' ' for c in plain.lower()).split())
+
+def item_key(listing):
+    #mismo item = mismo modelo; sin modelo, mismo titulo y edicion (dentro de la misma categoria)
+    model = _normalize(listing.get('model_name'))
+    if model:
+        return (listing['category'], 'model', model)
+    title = _normalize(listing.get('title'))
+    if not title:
+        return None
+    return (listing['category'], 'title', title, _normalize(listing.get('edition')))
+
+def _median(values):
+    return _percentile(sorted(values), 0.5)
+
+def _relative_by(groups, key):
+    #precio de cada publicacion dividido por la mediana de su item: 0.8 = 20% mas barato que lo normal
+    relative = {}
+    for listings in groups:
+        median = _median([l['price'] for l in listings])
+        if not median:
+            continue
+        for l in listings:
+            relative.setdefault(l.get(key), []).append(l['price'] / median)
+    return relative
+
+def summarize_price_variation(listings):
+    groups = {}
+    total = 0
+    for listing in listings:
+        price = float(listing['price'] or 0)
+        if price <= 0:
+            continue
+        total += 1
+        key = item_key(listing)
+        if key is not None:
+            groups.setdefault(key, []).append({**listing, 'price': price})
+
+    #solo se comparan items publicados al menos dos veces
+    comparable = [g for g in groups.values() if len(g) >= 2]
+
+    items = []
+    for g in comparable:
+        prices = sorted(l['price'] for l in g)
+        median = _percentile(prices, 0.5)
+        first = g[0]
+        label = first['title']
+        if first.get('model_name'):
+            label = f"{label} ({first['model_name']})"
+        elif first.get('edition'):
+            label = f"{label}, {first['edition']}"
+        by_condition = {}
+        for l in g:
+            by_condition.setdefault(l.get('condition') or 'UNKNOWN', []).append(l['price'])
+        items.append({
+            'item': label,
+            'category': first['category'],
+            'listings': len(g),
+            'sellers': len({str(l['seller_id']) for l in g}),
+            'min': round(prices[0], 2),
+            'median': round(median, 2),
+            'max': round(prices[-1], 2),
+            'spread_pct': round((prices[-1] - prices[0]) / median * 100, 2) if median else 0.0,
+            'by_condition': {c: round(_median(v), 2) for c, v in sorted(by_condition.items())},
+        })
+    items.sort(key=lambda i: (-i['listings'], -i['spread_pct'], i['item']))
+
+    condition_order = {c: i for i, c in enumerate(MaterialCondition.values)}
+    by_condition = [
+        {'condition': c or 'UNKNOWN', 'listings': len(v), 'median_relative_price': round(_median(v), 4)}
+        for c, v in _relative_by(comparable, 'condition').items()
+    ]
+    by_condition.sort(key=lambda r: condition_order.get(r['condition'], len(condition_order)))
+    by_faculty = [
+        {'faculty': f or 'Unknown', 'listings': len(v), 'median_relative_price': round(_median(v), 4)}
+        for f, v in _relative_by(comparable, 'faculty').items()
+    ]
+    by_faculty.sort(key=lambda r: (-r['listings'], r['faculty']))
+
+    return {
+        'listings': total,
+        'items_compared': len(comparable),
+        'listings_compared': sum(len(g) for g in comparable),
+        'median_spread_pct': round(_median([i['spread_pct'] for i in items]), 2),
+        'items': items[:MAX_ITEMS_LISTED],
+        'by_condition': by_condition,
+        'by_faculty': by_faculty,
+    }
+
+def price_variation(request):
+    listings = Material.objects.values(
+        'title', 'category', 'edition', 'model_name', 'condition', 'price', 'seller_id',
+        faculty=F('seller__faculty'),
+    )
+    return JsonResponse(summarize_price_variation(listings))
 
 # Business Question 10
 # TODO: implement
 
 # Business Question 11
-# TODO: implement
+# Upper bound (days) of each bar in the time-to-sell histogram; the last bar is open-ended.
+SELL_TIME_BUCKETS = [(1, 'Under 1 day'), (3, '1-3 days'), (7, '3-7 days'), (14, '1-2 weeks'), (30, '2-4 weeks'), (None, '30+ days')]
+
+def summarize_time_to_sell(sales):
+    #dias entre que se publica el material y se completa su intercambio
+    days = []
+    by_category = {}
+    skipped = 0
+    for sale in sales:
+        listed_at, sold_at = sale['listed_at'], sale['completed_at']
+        if listed_at is None or sold_at is None or sold_at < listed_at:
+            skipped += 1
+            continue
+        d = (sold_at - listed_at).total_seconds() / 86400
+        days.append(d)
+        by_category.setdefault(sale['category'], []).append(d)
+
+    histogram = []
+    lower = 0
+    for upper, label in SELL_TIME_BUCKETS:
+        count = sum(1 for d in days if d >= lower and (upper is None or d < upper))
+        histogram.append({'bucket': label, 'sold': count})
+        lower = upper
+
+    categories = [
+        {'category': c, 'sold': len(v), 'mean_days': round(sum(v) / len(v), 4), 'median_days': round(_median(v), 4)}
+        for c, v in by_category.items()
+    ]
+    categories.sort(key=lambda r: (r['median_days'], r['category']))
+    return {
+        'sold_listings': len(days),
+        'skipped': skipped,
+        'days_to_sell': _describe(days),
+        'histogram': histogram,
+        'by_category': categories,
+    }
+
+def time_to_sell(request):
+    sales = Exchange.objects.filter(status=ExchangeStatus.COMPLETED).values(
+        'completed_at', category=F('material__category'), listed_at=F('material__created_at'),
+    )
+    return JsonResponse(summarize_time_to_sell(sales))
+
+# Business Question 14 - Average ticket: what a completed sale is worth, overall and per item condition.
+
+def _pesos(total, sales):
+    return int(round(float(total) / sales)) if sales else None
+
+def summarize_average_ticket(groups):
+    #groups: una fila por condicion con la suma de precios y cuantas ventas tiene
+    total = sum(float(g['total'] or 0) for g in groups)
+    sales = sum(g['sales'] for g in groups)
+    by_condition = {
+        g['condition']: _pesos(g['total'], g['sales'])
+        for g in groups
+        if g['condition'] is not None and g['sales']
+    }
+    #mismo orden que MaterialCondition (de mejor a peor estado)
+    order = {value: i for i, value in enumerate(MaterialCondition.values)}
+    return {
+        'globalAverage': _pesos(total, sales),
+        'byCondition': dict(sorted(by_condition.items(), key=lambda kv: order.get(kv[0], len(order)))),
+    }
+
+def completed_sales_by_condition():
+    #JOIN Exchange -> Material (INNER, por materialId) y GROUP BY Material.condition, solo ventas completadas
+    return (
+        Exchange.objects.filter(status=ExchangeStatus.COMPLETED)
+        .values(condition=F('material__condition'))
+        .annotate(total=Sum('price'), sales=Count('id'))
+        .order_by()
+    )
+
+def average_ticket(request):
+    return JsonResponse(summarize_average_ticket(list(completed_sales_by_condition())))
+
+
+def calculate_time_to_sold_metrics(sales_records):
+    """
+    Computes time-to-sold metrics for published materials.
+    sales_records is an iterable of dicts with:
+      - 'material_id': str/UUID
+      - 'category': str (MaterialCategory value)
+      - 'listed_at': datetime
+      - 'sold_at': datetime
+    """
+    durations_by_category = {}
+    all_days = []
+
+    buckets = {
+        '< 1 day': 0,
+        '1 - 3 days': 0,
+        '3 - 7 days': 0,
+        '7 - 14 days': 0,
+        '14 - 30 days': 0,
+        '> 30 days': 0,
+    }
+
+    for record in sales_records:
+        listed = record.get('listed_at')
+        sold = record.get('sold_at')
+        if not listed or not sold:
+            continue
+        days = max(0.0, (sold - listed).total_seconds() / 86400.0)
+        category = record.get('category') or 'OTHER'
+
+        all_days.append(days)
+        durations_by_category.setdefault(category, []).append(days)
+
+        if days < 1:
+            buckets['< 1 day'] += 1
+        elif days <= 3:
+            buckets['1 - 3 days'] += 1
+        elif days <= 7:
+            buckets['3 - 7 days'] += 1
+        elif days <= 14:
+            buckets['7 - 14 days'] += 1
+        elif days <= 30:
+            buckets['14 - 30 days'] += 1
+        else:
+            buckets['> 30 days'] += 1
+
+    by_category = []
+    for cat, cat_days in durations_by_category.items():
+        by_category.append({
+            'category': cat,
+            'total_sold': len(cat_days),
+            **_describe(cat_days),
+        })
+
+    by_category.sort(key=lambda c: (-c['total_sold'], c['mean']))
+
+    fastest_category = min(by_category, key=lambda c: c['mean'])['category'] if by_category else None
+    slowest_category = max(by_category, key=lambda c: c['mean'])['category'] if by_category else None
+
+    return {
+        'total_sold_items': len(all_days),
+        'overall': _describe(all_days),
+        'distribution': [
+            {'range': r, 'count': count}
+            for r, count in buckets.items()
+        ],
+        'by_category': by_category,
+        'fastest_category': fastest_category,
+        'slowest_category': slowest_category,
+    }
+
+
+def time_to_sold(request):
+    """
+    BQ 11: What is the average time (in days) it takes for a newly listed academic item to be marked as sold?
+    """
+    category = request.GET.get('category')
+    if category is not None and category not in MaterialCategory.values:
+        return JsonResponse({'error': 'category must be a valid MaterialCategory'}, status=400)
+
+    try:
+        exchanges = (
+            Exchange.objects
+            .filter(status=ExchangeStatus.COMPLETED, completed_at__isnull=False, material__isnull=False)
+            .values('material_id', 'material__category', 'material__created_at', 'completed_at')
+        )
+        if category:
+            exchanges = exchanges.filter(material__category=category)
+
+        sales_data = [
+            {
+                'material_id': str(row['material_id']),
+                'category': row['material__category'],
+                'listed_at': row['material__created_at'],
+                'sold_at': row['completed_at'],
+            }
+            for row in exchanges
+            if row['material__created_at'] and row['completed_at']
+        ]
+    except (ProgrammingError, DataError) as err:
+        logger.warning('Could not query time-to-sold data: %s', err)
+        return JsonResponse({'error': 'Failed to query sales data', 'available': False}, status=500)
+
+    result = calculate_time_to_sold_metrics(sales_data)
+    result['available'] = True
+    if category:
+        result['filtered_category'] = category
+    return JsonResponse(result)
 
 
 class CampusHour(Func):
@@ -427,14 +820,14 @@ NEGATIVE_WORDS = {
     'malo', 'mala', 'mal', 'tarde', 'grosero', 'grosera', 'lento', 'lenta', 'roto', 'rota', 'danado',
     'danada', 'estafa', 'peor', 'sucio', 'sucia', 'falso', 'falsa', 'problema', 'impuntual',
 }
-NEGATIONS = {'not', 'no', 'never', 'dont', 'didnt', 'wasnt', 'isnt', 'nunca', 'tampoco'}
-STOPWORDS = {
+REVIEW_NEGATIONS = {'not', 'no', 'never', 'dont', 'didnt', 'wasnt', 'isnt', 'nunca', 'tampoco'}
+REVIEW_STOPWORDS = {
     'the', 'and', 'was', 'were', 'very', 'with', 'for', 'that', 'this', 'but', 'are', 'you', 'they',
     'has', 'had', 'have', 'from', 'all', 'its', 'our', 'his', 'her', 'she', 'him', 'item',
     'una', 'uno', 'los', 'las', 'del', 'que', 'muy', 'con', 'por', 'para', 'fue', 'pero', 'como',
     'todo', 'esta', 'este', 'era', 'son', 'mas', 'sus',
 }
-TOP_WORDS = 10
+REVIEW_TOP_WORDS = 10
 
 
 def _words(text):
@@ -448,7 +841,7 @@ def classify_review(text):
     score = 0
     for i, word in enumerate(words):
         value = 1 if word in POSITIVE_WORDS else -1 if word in NEGATIVE_WORDS else 0
-        if value and i > 0 and words[i - 1] in NEGATIONS:
+        if value and i > 0 and words[i - 1] in REVIEW_NEGATIONS:
             value = -value
         score += value
     if score > 0:
@@ -484,7 +877,7 @@ def summarize_review_sentiment(ratings):
         counts[sentiment] += 1
         stars[sentiment].append(rating['stars'])
         keywords[sentiment].update(
-            w for w in _words(text) if len(w) >= 3 and w not in STOPWORDS and w not in NEGATIONS
+            w for w in _words(text) if len(w) >= 3 and w not in REVIEW_STOPWORDS and w not in REVIEW_NEGATIONS
         )
         if _stars_sentiment(rating['stars']) == sentiment:
             agree += 1
@@ -498,7 +891,7 @@ def summarize_review_sentiment(ratings):
         # de las reseñas con texto, cuántas dicen lo mismo que sus estrellas
         'agreement_with_stars': round(agree / with_text, 4) if with_text else 0.0,
         'top_keywords': {
-            s: [{'word': w, 'count': c} for w, c in keywords[s].most_common(TOP_WORDS)] for s in SENTIMENTS
+            s: [{'word': w, 'count': c} for w, c in keywords[s].most_common(REVIEW_TOP_WORDS)] for s in SENTIMENTS
         },
         'top_tags': [{'tag': t, 'count': c} for t, c in tags.most_common()],
     }
@@ -507,6 +900,195 @@ def summarize_review_sentiment(ratings):
 def review_sentiment(request):
     ratings = Rating.objects.values('stars', 'tags', 'review')
     return JsonResponse(summarize_review_sentiment(ratings))
+
+
+# Business Question 13
+# Words students write right before a deal falls through. A chat falls through when its exchange was
+# cancelled, or when nobody wrote in it for ABANDONED_AFTER_DAYS and no exchange was completed or is pending.
+ABANDONED_AFTER_DAYS = 7
+LAST_MESSAGES = 10      # "immediately before": only the last messages of each chat are read
+MIN_CONVERSATIONS = 2   # a word must show up in at least this many chats, so names or nicknames of one chat never appear
+TOP_WORDS = 40
+TOP_PHRASES = 15
+
+# Words that say nothing about why a deal ended: Spanish and English connectors, greetings and thanks.
+# The text is normalized first (_normalize), so they are written without accents.
+STOPWORDS = set('''
+a al algo ante asi aun bien cada como con cual de del desde donde el ella ellos en entre era es esa ese eso esta
+estas este esto estoy etc fue ha hay la las le les lo los mas me mi mis muy ni no nos o otra otro para pero por
+porque pues que se si sin sobre su sus te tengo ti tu tus un una uno unos y ya yo
+hola buenas buenos dias tardes noches gracias listo vale jaja jajaja
+the and for you your are was not but with this that have has can its just from what when will would there they
+them then than too yes also how hi hello hey thanks thank okay
+'''.split())
+
+URL_OR_EMAIL = re.compile(r'https?://\S+|\S+@\S+')
+# Kept only inside phrases: without them "manana no puedo" would read as "manana puedo".
+NEGATIONS = {'no', 'not', 'nunca', 'never'}
+
+
+def message_words(content, keep_negations=False):
+    #fuera las fotos (URL), los correos y los numeros (telefonos, precios); despues el mismo texto normalizado de BQ9
+    text = _normalize(URL_OR_EMAIL.sub(' ', content or ''))
+    return [
+        w for w in text.split()
+        if w.isalpha() and ((keep_negations and w in NEGATIONS) or (len(w) >= 3 and w not in STOPWORDS))
+    ]
+
+
+def message_phrases(content):
+    #dos palabras seguidas; una negacion solo puede abrir la frase ("no puedo"), nunca cerrarla
+    tokens = message_words(content, keep_negations=True)
+    return [f'{a} {b}' for a, b in zip(tokens, tokens[1:]) if b not in NEGATIONS]
+
+
+def _room_key(row):
+    return (str(row['material_id']), str(row['buyer_id']), str(row['seller_id']))
+
+
+def classify_chats(chat_rooms, exchanges, last_message_at, now):
+    """How each chat ended and when: {roomId: (outcome, ended_at)}.
+
+    A chat belongs to an exchange when both have the same material, buyer and seller (as in BQ4).
+    Outcomes: 'completed' wins over everything (the buyer may cancel and then buy anyway), then
+    'cancelled' (cut at the last cancellation), then 'open' while an exchange is still pending,
+    'abandoned' after ABANDONED_AFTER_DAYS without messages, and 'open' otherwise.
+    """
+    by_room = {}
+    for exchange in exchanges:
+        by_room.setdefault(_room_key(exchange), []).append(exchange)
+
+    outcomes = {}
+    for room in chat_rooms:
+        room_id = str(room['id'])
+        related = by_room.get(_room_key(room), [])
+        statuses = {e['status'] for e in related}
+        last = last_message_at.get(room_id)
+
+        if ExchangeStatus.COMPLETED in statuses:
+            times = [e['completed_at'] for e in related if e['status'] == ExchangeStatus.COMPLETED and e['completed_at']]
+            outcomes[room_id] = ('completed', min(times) if times else None)
+        elif ExchangeStatus.PENDING in statuses:
+            outcomes[room_id] = ('open', None)
+        elif ExchangeStatus.CANCELLED in statuses:
+            times = [e['cancelled_at'] for e in related if e['status'] == ExchangeStatus.CANCELLED and e['cancelled_at']]
+            outcomes[room_id] = ('cancelled', max(times) if times else None)
+        elif last is not None and now - last >= timedelta(days=ABANDONED_AFTER_DAYS):
+            outcomes[room_id] = ('abandoned', last)
+        else:
+            outcomes[room_id] = ('open', None)
+    return outcomes
+
+
+def _share(part, whole):
+    return round(part / whole, 4) if whole else 0.0
+
+
+def summarize_failed_chat_words(outcomes, messages, last_messages=LAST_MESSAGES, min_conversations=MIN_CONVERSATIONS):
+    """Word cloud of the last messages of the chats that fell through, compared with the chats that ended in a sale.
+
+    `count` is how many times a word was written; `conversations` in how many chats it appears. The shares use
+    chats, so one very talkative chat cannot fill the cloud by itself.
+    """
+    thread_by_room = {}
+    for message in messages:
+        thread_by_room.setdefault(str(message['chat_room_id']), []).append(message)
+
+    words, phrases, completed_docs = Counter(), Counter(), Counter()
+    word_docs, phrase_docs = Counter(), Counter()
+    failed_chats = completed_chats = messages_read = 0
+    by_outcome = Counter(outcome for outcome, _ in outcomes.values())
+
+    for room_id, (outcome, ended_at) in outcomes.items():
+        if outcome == 'open':
+            continue
+        thread = sorted(
+            (m for m in thread_by_room.get(room_id, []) if ended_at is None or m['created_at'] <= ended_at),
+            key=lambda m: m['created_at'],
+        )[-last_messages:]
+        if not thread:
+            continue
+
+        chat_words, chat_phrases = [], []
+        for message in thread:
+            chat_words += message_words(message['content'])
+            chat_phrases += message_phrases(message['content'])
+
+        if outcome == 'completed':
+            completed_chats += 1
+            completed_docs.update(set(chat_words))
+            continue
+        failed_chats += 1
+        messages_read += len(thread)
+        words.update(chat_words)
+        word_docs.update(set(chat_words))
+        phrases.update(chat_phrases)
+        phrase_docs.update(set(chat_phrases))
+
+    top_words = [
+        {
+            'word': w,
+            'count': words[w],
+            'conversations': word_docs[w],
+            'share': _share(word_docs[w], failed_chats),
+            'completed_share': _share(completed_docs[w], completed_chats),
+        }
+        for w in words if word_docs[w] >= min_conversations
+    ]
+    top_words.sort(key=lambda r: (-r['count'], -r['conversations'], r['word']))
+
+    top_phrases = [
+        {'phrase': p, 'count': phrases[p], 'conversations': phrase_docs[p]}
+        for p in phrases if phrase_docs[p] >= min_conversations
+    ]
+    top_phrases.sort(key=lambda r: (-r['count'], r['phrase']))
+
+    #palabras que aparecen mas en los chats que se cayeron que en los que terminaron en venta
+    distinctive = [
+        {**r, 'difference': round(r['share'] - r['completed_share'], 4)}
+        for r in top_words if r['share'] > r['completed_share']
+    ]
+    distinctive.sort(key=lambda r: (-r['difference'], r['word']))
+
+    return {
+        'abandoned_after_days': ABANDONED_AFTER_DAYS,
+        'last_messages': last_messages,
+        'min_conversations': min_conversations,
+        'chats': {key: by_outcome.get(key, 0) for key in ('cancelled', 'abandoned', 'completed', 'open')},
+        'conversations_analyzed': failed_chats,
+        'completed_conversations_compared': completed_chats,
+        'messages_analyzed': messages_read,
+        'words': top_words[:TOP_WORDS],
+        'phrases': top_phrases[:TOP_PHRASES],
+        'distinctive_words': distinctive[:10],
+    }
+
+
+def failed_chat_words(request):
+    chat_rooms = list(ChatRoom.objects.values('id', 'material_id', 'buyer_id', 'seller_id'))
+    columns = ('material_id', 'buyer_id', 'seller_id', 'status', 'completed_at')
+
+    try:
+        exchanges = list(Exchange.objects.values(*columns, 'cancelled_at'))
+    except ProgrammingError:
+        logger.warning('Exchange.cancelledAt is missing; apply the Prisma migration that adds it')
+        exchanges = [{**e, 'cancelled_at': None} for e in Exchange.objects.values(*columns)]
+
+    try:
+        #las tarjetas de propuesta (MEETING) las escribe el servidor, no los estudiantes
+        messages = list(Message.objects.exclude(type=MessageType.MEETING).values('chat_room_id', 'content', 'created_at'))
+    except (DataError, ProgrammingError):
+        logger.warning('Message.type is missing; meeting proposal cards are read as text')
+        messages = list(Message.objects.values('chat_room_id', 'content', 'created_at'))
+
+    last_message_at = {
+        str(row['chat_room_id']): row['last']
+        for row in Message.objects.values('chat_room_id').annotate(last=Max('created_at')).order_by()
+    }
+    outcomes = classify_chats(chat_rooms, exchanges, last_message_at, timezone.now())
+    return JsonResponse(summarize_failed_chat_words(outcomes, messages))
+
+
 # Dashboard
 # One entry per implemented business question; the sidebar, the overview and each question page read from here.
 DASHBOARD_QUESTIONS = [
@@ -541,17 +1123,42 @@ DASHBOARD_QUESTIONS = [
         'endpoint': 'wishlist-conversion',
     },
     {
+        'number': 8,
+        'title': 'Empty listing fields',
+        'question': 'Which fields of the listing form do sellers leave empty most often (course, edition, condition, faculty)?',
+        'endpoint': 'empty-fields',
+    },
+    {
+        'number': 9,
+        'title': 'Price variation',
+        'question': 'How do prices of the same item vary (same book edition, same model) between sellers, faculties, and item condition?',
+        'endpoint': 'price-variation',
+    },
+    {
+        'number': 11,
+        'title': 'Time to sell',
+        'question': 'What is the average time (in days) it takes for a newly listed academic item to be marked as sold?',
+        'endpoint': 'time-to-sell',
+    },
+    {
         'number': 12,
         'title': 'Meeting points',
         'question': 'Which specific campus locations (visualized as a heat map) are most frequently used for item exchanges, and how does this density shift during different hours of the day?',
         'endpoint': 'meeting-point-usage',
     },
     {
+        'number': 13,
+        'title': 'Words before a deal falls through',
+        'question': 'What are the most frequently used words and phrases (word cloud) in the in-app chat messages immediately before a transaction is cancelled or abandoned?',
+        'endpoint': 'failed-chat-words',
+    },
+    {
         'number': 14,
         'title': 'Review sentiment',
         'question': 'What is the emotional sentiment (positive, neutral, negative) and the most common keywords found in the written reviews left for buyers and sellers?',
         'endpoint': 'review-sentiment',
-    },]
+    },
+]
 
 
 def _dashboard_context(current=None):
