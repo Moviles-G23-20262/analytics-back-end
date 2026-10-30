@@ -29,6 +29,7 @@ def api_root(request):
             "activity_times": "/analytics/activity-times/",
             "wishlist_conversion": "/analytics/wishlist-conversion/",
             "empty_fields": "/analytics/empty-fields/",
+            "photos_vs_contacts": "/analytics/photos-vs-contacts/",
             "price_variation": "/analytics/price-variation/",
             "time_to_sell": "/analytics/time-to-sell/",
             "average_ticket": "/analytics/average-ticket/",

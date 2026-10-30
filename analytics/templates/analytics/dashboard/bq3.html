@@ -1,0 +1,120 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ3 · Photos and contacts{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">Do more photos bring more buyers?</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Buyer contacts by number of photos</h2>
+    <p class="sub">Average buyers who opened a chat per listing, and the share of listings that got at least one.</p>
+    <div class="chart-box tall"><canvas id="c-buckets" role="img" aria-label="Average contacts and contacted share per photo bucket"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Every listing</h2>
+    <p class="sub">One bubble per number of photos and number of contacts; the bigger the bubble, the more listings share it.</p>
+    <div class="chart-box tall"><canvas id="c-points" role="img" aria-label="Photos against buyer contacts per listing"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>Every listing (<code>Material</code>) counts, whatever its status. Its <strong>photos</strong> are the length of <code>imageUrls</code>.</li>
+    <li>A <strong>contact</strong> is a buyer who opened a chat about the listing (<code>ChatRoom</code>). Each buyer counts once per listing, however many messages they send.</li>
+    <li>Listings are grouped into 0, 1, 2 and 3 or more photos. The <strong>lift</strong> is the average contacts of listings with 3+ photos divided by the average of listings with fewer.</li>
+    <li>The <strong>correlation</strong> is Pearson's r between photos and contacts over every listing: near 0 means no relation, near 1 means more photos go with more contacts.</li>
+    <li>A listing published yesterday has had less time to be contacted than one from last month, so each group also shows its <strong>average age</strong>.</li>
+    <li>What the photos show (angles, close-ups of damage) is not stored anywhere, so that part of the question needs image labelling and is not answered here.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  setAnswer(HEADLINES[3](d));
+  const b = d.buckets;
+  const many = b[b.length - 1];
+
+  tiles('tiles', [
+    { label: 'Listings', value: nf.format(d.total_listings) },
+    { label: 'Contacted listings', value: fmtPct(ratioPct(d.contacted_listings, d.total_listings)), hint: `${nf.format(d.contacted_listings)} of ${nf.format(d.total_listings)}` },
+    { label: `Lift with ${d.many_photos_threshold}+ photos`, value: d.many_photos_lift === null ? '–' : nf1.format(d.many_photos_lift) + '×', hint: 'average contacts vs. fewer photos' },
+    { label: 'Correlation (r)', value: d.correlation === null ? '–' : nf.format(d.correlation), hint: 'photos against contacts' },
+  ]);
+
+  draw('c-buckets', {
+    type: 'bar',
+    data: {
+      labels: b.map(r => r.bucket),
+      datasets: [
+        bar('Average contacts', b.map(r => r.mean_contacts), 1, { yAxisID: 'y' }),
+        line('Contacted share (%)', b.map(r => +(r.contacted_share * 100).toFixed(1)), 3, { type: 'line', yAxisID: 'y1' }),
+      ],
+    },
+    options: baseOptions({
+      plugins: { tooltip: { callbacks: { afterBody: items => `${plural(b[items[0].dataIndex].listings, 'listing')}, ${nf1.format(b[items[0].dataIndex].mean_age_days)} days old on average` } } },
+      scales: {
+        ...axes(),
+        y1: { position: 'right', beginAtZero: true, max: 100, grid: { display: false }, ticks: { callback: v => v + '%' } },
+      },
+    }),
+  });
+
+  const biggest = Math.max(1, ...d.points.map(p => p.listings));
+  const wholeTicks = max => axis => { axis.ticks = Array.from({ length: max + 1 }, (_, v) => ({ value: v })); };
+  const maxPhotos = Math.max(d.many_photos_threshold, ...d.points.map(p => p.photos));
+  const maxContacts = Math.max(1, ...d.points.map(p => p.contacts));
+  draw('c-points', {
+    type: 'bubble',
+    data: {
+      datasets: [{
+        label: 'Listings',
+        data: d.points.map(p => ({ x: p.photos, y: p.contacts, r: 4 + 14 * Math.sqrt(p.listings / biggest), n: p.listings })),
+        backgroundColor: `color-mix(in srgb, ${series(1)} 55%, transparent)`,
+        borderColor: series(1),
+      }],
+    },
+    options: baseOptions({
+      legend: false,
+      interaction: { mode: 'nearest', intersect: true },
+      plugins: { tooltip: { callbacks: { label: c => `${plural(c.raw.n, 'listing')} with ${plural(c.raw.x, 'photo')} and ${plural(c.raw.y, 'contact')}` } } },
+      scales: axes({
+        counts: true,
+        // Half a step of room on each side so the edge bubbles are not cut in half; ticks stay on whole numbers.
+        x: { min: -0.5, max: maxPhotos + 0.5, title: { display: true, text: 'Photos' }, afterBuildTicks: wholeTicks(maxPhotos) },
+        y: { min: -0.5, max: maxContacts + 0.5, title: { display: true, text: 'Buyers who contacted' }, afterBuildTicks: wholeTicks(maxContacts) },
+      }),
+    }),
+  });
+
+  const list = [];
+  if (d.total_listings) {
+    const few = b.slice(0, -1).filter(r => r.listings);
+    const best = [...b].filter(r => r.listings).sort((x, y) => y.mean_contacts - x.mean_contacts)[0];
+    if (best && best.mean_contacts) list.push(`${strong(best.bucket)} get the most attention: ${strong(nf.format(best.mean_contacts))} ${best.mean_contacts === 1 ? 'buyer' : 'buyers'} per listing on average, and ${fmtPct(best.contacted_share * 100)} of them were contacted at least once.`);
+    const none = b[0];
+    if (none.listings) list.push(`${plural(none.listings, 'listing')} ${none.listings === 1 ? 'has' : 'have'} no photo at all; ${fmtPct(none.contacted_share * 100)} of them got a buyer.`);
+    if (d.many_photos_lift !== null && d.many_photos_lift >= 1.2) list.push(`A photo checklist that asks for at least ${d.many_photos_threshold} photos is supported by the data: those listings get ${nf1.format(d.many_photos_lift)}× the contacts.`);
+    if (d.correlation !== null) list.push(`The correlation between photos and contacts is ${strong(nf.format(d.correlation))}, ${Math.abs(d.correlation) < 0.2 ? 'a weak relation' : Math.abs(d.correlation) < 0.5 ? 'a moderate relation' : 'a strong relation'}.`);
+    if (many.listings && few.length) {
+      const fewAge = total(few.map(r => r.mean_age_days * r.listings)) / total(few.map(r => r.listings));
+      if (Math.abs(many.mean_age_days - fewAge) >= 7) list.push(`Careful: listings with ${d.many_photos_threshold}+ photos are ${nf1.format(Math.abs(many.mean_age_days - fewAge))} days ${many.mean_age_days > fewAge ? 'older' : 'newer'} on average, so part of the difference is the time they have been online.`);
+    }
+    if (d.total_listings < 20) list.push(`Only ${plural(d.total_listings, 'listing')} so far: the averages will move a lot as more are published.`);
+  }
+  insights('insights', list);
+
+  table('t-data', ['Photos', 'Listings', 'Contacts', 'Average contacts', 'Median contacts', 'Contacted (%)', 'Average age (days)'],
+    b.map(r => [r.bucket, r.listings, r.contacts, nf.format(r.mean_contacts), nf.format(r.median_contacts), nf1.format(r.contacted_share * 100), nf1.format(r.mean_age_days)]));
+}
+start(render);
+</script>
+{% endblock %}

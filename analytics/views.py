@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from collections import Counter
-from datetime import timedelta
+from datetime import timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
 from django.http import Http404
@@ -566,6 +566,86 @@ def price_variation(request):
     )
     return JsonResponse(summarize_price_variation(listings))
 
+# Business Question 3
+# Photos per listing (length of imageUrls) against the buyers who contacted the seller about it
+# (one ChatRoom per buyer and listing). What the photos show (angles, close-ups of damage) is not
+# stored anywhere, so that part of the question cannot be answered from the database.
+# The last bucket is open-ended: Sprint 1 asks whether 3 or more photos bring more contacts.
+PHOTO_BUCKETS = [(0, 'No photos'), (1, '1 photo'), (2, '2 photos'), (3, '3+ photos')]
+MANY_PHOTOS = PHOTO_BUCKETS[-1][0]
+
+def _pearson(xs, ys):
+    n = len(xs)
+    if n < 2:
+        return None
+    mean_x, mean_y = sum(xs) / n, sum(ys) / n
+    cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    var_x = sum((x - mean_x) ** 2 for x in xs)
+    var_y = sum((y - mean_y) ** 2 for y in ys)
+    if not var_x or not var_y:
+        return None
+    return cov / (var_x * var_y) ** 0.5
+
+def _as_utc(moment):
+    # Prisma's DateTime columns have no time zone, so they come back naive; they are UTC.
+    return moment.replace(tzinfo=dt_timezone.utc) if timezone.is_naive(moment) else moment
+
+def summarize_photos_vs_contacts(listings, now):
+    #cuantas fotos tiene cada publicacion y cuantos compradores distintos escribieron por ella
+    rows = []
+    for listing in listings:
+        photos = len(listing.get('image_urls') or [])
+        contacts = listing.get('contacts') or 0
+        created_at = listing.get('created_at')
+        age_days = max((_as_utc(now) - _as_utc(created_at)).total_seconds() / 86400, 0) if created_at else None
+        rows.append((photos, contacts, age_days))
+
+    buckets = []
+    for i, (lower, label) in enumerate(PHOTO_BUCKETS):
+        upper = PHOTO_BUCKETS[i + 1][0] if i + 1 < len(PHOTO_BUCKETS) else None
+        group = [r for r in rows if r[0] >= lower and (upper is None or r[0] < upper)]
+        contacts = [r[1] for r in group]
+        ages = [r[2] for r in group if r[2] is not None]
+        buckets.append({
+            'bucket': label,
+            'min_photos': lower,
+            'listings': len(group),
+            'contacts': sum(contacts),
+            'mean_contacts': round(sum(contacts) / len(contacts), 4) if contacts else 0.0,
+            'median_contacts': round(_median(contacts), 4) if contacts else 0.0,
+            'contacted_share': round(sum(1 for c in contacts if c) / len(contacts), 4) if contacts else 0.0,
+            # Older listings have had more time to be contacted; shown so that bias is visible.
+            'mean_age_days': round(sum(ages) / len(ages), 2) if ages else 0.0,
+        })
+
+    many = [r[1] for r in rows if r[0] >= MANY_PHOTOS]
+    few = [r[1] for r in rows if r[0] < MANY_PHOTOS]
+    mean_many = sum(many) / len(many) if many else None
+    mean_few = sum(few) / len(few) if few else None
+    r = _pearson([row[0] for row in rows], [row[1] for row in rows])
+
+    # One point per (photos, contacts) pair, sized by how many listings share it, for the bubble chart.
+    pairs = Counter((row[0], row[1]) for row in rows)
+    points = [{'photos': p, 'contacts': c, 'listings': n} for (p, c), n in sorted(pairs.items())]
+
+    return {
+        'total_listings': len(rows),
+        'contacted_listings': sum(1 for row in rows if row[1]),
+        'total_contacts': sum(row[1] for row in rows),
+        'buckets': buckets,
+        'points': points,
+        'correlation': round(r, 4) if r is not None else None,
+        # How many times more contacts a listing with 3+ photos gets than one with fewer; null when either side is missing.
+        'many_photos_lift': round(mean_many / mean_few, 4) if mean_many is not None and mean_few else None,
+        'many_photos_threshold': MANY_PHOTOS,
+    }
+
+def photos_vs_contacts(request):
+    listings = Material.objects.annotate(
+        contacts=Count('chat_rooms__buyer', distinct=True),
+    ).values('image_urls', 'created_at', 'contacts')
+    return JsonResponse(summarize_photos_vs_contacts(listings, timezone.now()))
+
 # Business Question 10
 # TODO: implement
 
@@ -1097,6 +1177,12 @@ DASHBOARD_QUESTIONS = [
         'title': 'Buyer journey funnel',
         'question': 'How many listings does a buyer open before contacting a seller, and how many before completing an exchange?',
         'endpoint': 'buyer-journey-funnel',
+    },
+    {
+        'number': 3,
+        'title': 'Photos and contacts',
+        'question': 'Which photos do sellers upload most (number of photos, angles, close-ups of damage), and how does that relate to the number of buyers who contact them?',
+        'endpoint': 'photos-vs-contacts',
     },
     {
         'number': 4,
