@@ -1,4 +1,7 @@
+import re
 import unicodedata
+from collections import Counter
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from django.http import Http404
@@ -11,12 +14,12 @@ import logging
 
 from django.db import DataError, ProgrammingError
 from django.db import ProgrammingError
-from django.db.models import Count, F, Func, IntegerField, Q, Sum
+from django.db.models import Count, F, Func, IntegerField, Max, Q, Sum
 from django.db.models.functions import ExtractHour, ExtractWeekDay
 from .models import Material, AnalyticsEvent, AnalyticsEventType
 from .models import Exchange, Notification, NotificationType, WishlistItem
 from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, ExchangeStatus
-from .models import ChatRoom, Message, MaterialCategory, MaterialCondition
+from .models import ChatRoom, Message, MaterialCategory, MaterialCondition, MessageType
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
 
@@ -799,6 +802,193 @@ def meeting_point_usage(request):
     return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'hour': hour, 'available': True, 'data': data})
 
 
+# Business Question 13
+# Words students write right before a deal falls through. A chat falls through when its exchange was
+# cancelled, or when nobody wrote in it for ABANDONED_AFTER_DAYS and no exchange was completed or is pending.
+ABANDONED_AFTER_DAYS = 7
+LAST_MESSAGES = 10      # "immediately before": only the last messages of each chat are read
+MIN_CONVERSATIONS = 2   # a word must show up in at least this many chats, so names or nicknames of one chat never appear
+TOP_WORDS = 40
+TOP_PHRASES = 15
+
+# Words that say nothing about why a deal ended: Spanish and English connectors, greetings and thanks.
+# The text is normalized first (_normalize), so they are written without accents.
+STOPWORDS = set('''
+a al algo ante asi aun bien cada como con cual de del desde donde el ella ellos en entre era es esa ese eso esta
+estas este esto estoy etc fue ha hay la las le les lo los mas me mi mis muy ni no nos o otra otro para pero por
+porque pues que se si sin sobre su sus te tengo ti tu tus un una uno unos y ya yo
+hola buenas buenos dias tardes noches gracias listo vale jaja jajaja
+the and for you your are was not but with this that have has can its just from what when will would there they
+them then than too yes also how hi hello hey thanks thank okay
+'''.split())
+
+URL_OR_EMAIL = re.compile(r'https?://\S+|\S+@\S+')
+# Kept only inside phrases: without them "manana no puedo" would read as "manana puedo".
+NEGATIONS = {'no', 'not', 'nunca', 'never'}
+
+
+def message_words(content, keep_negations=False):
+    #fuera las fotos (URL), los correos y los numeros (telefonos, precios); despues el mismo texto normalizado de BQ9
+    text = _normalize(URL_OR_EMAIL.sub(' ', content or ''))
+    return [
+        w for w in text.split()
+        if w.isalpha() and ((keep_negations and w in NEGATIONS) or (len(w) >= 3 and w not in STOPWORDS))
+    ]
+
+
+def message_phrases(content):
+    #dos palabras seguidas; una negacion solo puede abrir la frase ("no puedo"), nunca cerrarla
+    tokens = message_words(content, keep_negations=True)
+    return [f'{a} {b}' for a, b in zip(tokens, tokens[1:]) if b not in NEGATIONS]
+
+
+def _room_key(row):
+    return (str(row['material_id']), str(row['buyer_id']), str(row['seller_id']))
+
+
+def classify_chats(chat_rooms, exchanges, last_message_at, now):
+    """How each chat ended and when: {roomId: (outcome, ended_at)}.
+
+    A chat belongs to an exchange when both have the same material, buyer and seller (as in BQ4).
+    Outcomes: 'completed' wins over everything (the buyer may cancel and then buy anyway), then
+    'cancelled' (cut at the last cancellation), then 'open' while an exchange is still pending,
+    'abandoned' after ABANDONED_AFTER_DAYS without messages, and 'open' otherwise.
+    """
+    by_room = {}
+    for exchange in exchanges:
+        by_room.setdefault(_room_key(exchange), []).append(exchange)
+
+    outcomes = {}
+    for room in chat_rooms:
+        room_id = str(room['id'])
+        related = by_room.get(_room_key(room), [])
+        statuses = {e['status'] for e in related}
+        last = last_message_at.get(room_id)
+
+        if ExchangeStatus.COMPLETED in statuses:
+            times = [e['completed_at'] for e in related if e['status'] == ExchangeStatus.COMPLETED and e['completed_at']]
+            outcomes[room_id] = ('completed', min(times) if times else None)
+        elif ExchangeStatus.PENDING in statuses:
+            outcomes[room_id] = ('open', None)
+        elif ExchangeStatus.CANCELLED in statuses:
+            times = [e['cancelled_at'] for e in related if e['status'] == ExchangeStatus.CANCELLED and e['cancelled_at']]
+            outcomes[room_id] = ('cancelled', max(times) if times else None)
+        elif last is not None and now - last >= timedelta(days=ABANDONED_AFTER_DAYS):
+            outcomes[room_id] = ('abandoned', last)
+        else:
+            outcomes[room_id] = ('open', None)
+    return outcomes
+
+
+def _share(part, whole):
+    return round(part / whole, 4) if whole else 0.0
+
+
+def summarize_failed_chat_words(outcomes, messages, last_messages=LAST_MESSAGES, min_conversations=MIN_CONVERSATIONS):
+    """Word cloud of the last messages of the chats that fell through, compared with the chats that ended in a sale.
+
+    `count` is how many times a word was written; `conversations` in how many chats it appears. The shares use
+    chats, so one very talkative chat cannot fill the cloud by itself.
+    """
+    thread_by_room = {}
+    for message in messages:
+        thread_by_room.setdefault(str(message['chat_room_id']), []).append(message)
+
+    words, phrases, completed_docs = Counter(), Counter(), Counter()
+    word_docs, phrase_docs = Counter(), Counter()
+    failed_chats = completed_chats = messages_read = 0
+    by_outcome = Counter(outcome for outcome, _ in outcomes.values())
+
+    for room_id, (outcome, ended_at) in outcomes.items():
+        if outcome == 'open':
+            continue
+        thread = sorted(
+            (m for m in thread_by_room.get(room_id, []) if ended_at is None or m['created_at'] <= ended_at),
+            key=lambda m: m['created_at'],
+        )[-last_messages:]
+        if not thread:
+            continue
+
+        chat_words, chat_phrases = [], []
+        for message in thread:
+            chat_words += message_words(message['content'])
+            chat_phrases += message_phrases(message['content'])
+
+        if outcome == 'completed':
+            completed_chats += 1
+            completed_docs.update(set(chat_words))
+            continue
+        failed_chats += 1
+        messages_read += len(thread)
+        words.update(chat_words)
+        word_docs.update(set(chat_words))
+        phrases.update(chat_phrases)
+        phrase_docs.update(set(chat_phrases))
+
+    top_words = [
+        {
+            'word': w,
+            'count': words[w],
+            'conversations': word_docs[w],
+            'share': _share(word_docs[w], failed_chats),
+            'completed_share': _share(completed_docs[w], completed_chats),
+        }
+        for w in words if word_docs[w] >= min_conversations
+    ]
+    top_words.sort(key=lambda r: (-r['count'], -r['conversations'], r['word']))
+
+    top_phrases = [
+        {'phrase': p, 'count': phrases[p], 'conversations': phrase_docs[p]}
+        for p in phrases if phrase_docs[p] >= min_conversations
+    ]
+    top_phrases.sort(key=lambda r: (-r['count'], r['phrase']))
+
+    #palabras que aparecen mas en los chats que se cayeron que en los que terminaron en venta
+    distinctive = [
+        {**r, 'difference': round(r['share'] - r['completed_share'], 4)}
+        for r in top_words if r['share'] > r['completed_share']
+    ]
+    distinctive.sort(key=lambda r: (-r['difference'], r['word']))
+
+    return {
+        'abandoned_after_days': ABANDONED_AFTER_DAYS,
+        'last_messages': last_messages,
+        'min_conversations': min_conversations,
+        'chats': {key: by_outcome.get(key, 0) for key in ('cancelled', 'abandoned', 'completed', 'open')},
+        'conversations_analyzed': failed_chats,
+        'completed_conversations_compared': completed_chats,
+        'messages_analyzed': messages_read,
+        'words': top_words[:TOP_WORDS],
+        'phrases': top_phrases[:TOP_PHRASES],
+        'distinctive_words': distinctive[:10],
+    }
+
+
+def failed_chat_words(request):
+    chat_rooms = list(ChatRoom.objects.values('id', 'material_id', 'buyer_id', 'seller_id'))
+    columns = ('material_id', 'buyer_id', 'seller_id', 'status', 'completed_at')
+
+    try:
+        exchanges = list(Exchange.objects.values(*columns, 'cancelled_at'))
+    except ProgrammingError:
+        logger.warning('Exchange.cancelledAt is missing; apply the Prisma migration that adds it')
+        exchanges = [{**e, 'cancelled_at': None} for e in Exchange.objects.values(*columns)]
+
+    try:
+        #las tarjetas de propuesta (MEETING) las escribe el servidor, no los estudiantes
+        messages = list(Message.objects.exclude(type=MessageType.MEETING).values('chat_room_id', 'content', 'created_at'))
+    except (DataError, ProgrammingError):
+        logger.warning('Message.type is missing; meeting proposal cards are read as text')
+        messages = list(Message.objects.values('chat_room_id', 'content', 'created_at'))
+
+    last_message_at = {
+        str(row['chat_room_id']): row['last']
+        for row in Message.objects.values('chat_room_id').annotate(last=Max('created_at')).order_by()
+    }
+    outcomes = classify_chats(chat_rooms, exchanges, last_message_at, timezone.now())
+    return JsonResponse(summarize_failed_chat_words(outcomes, messages))
+
+
 # Dashboard
 # One entry per implemented business question; the sidebar, the overview and each question page read from here.
 DASHBOARD_QUESTIONS = [
@@ -855,6 +1045,12 @@ DASHBOARD_QUESTIONS = [
         'title': 'Meeting points',
         'question': 'Which specific campus locations (visualized as a heat map) are most frequently used for item exchanges, and how does this density shift during different hours of the day?',
         'endpoint': 'meeting-point-usage',
+    },
+    {
+        'number': 13,
+        'title': 'Words before a deal falls through',
+        'question': 'What are the most frequently used words and phrases (word cloud) in the in-app chat messages immediately before a transaction is cancelled or abandoned?',
+        'endpoint': 'failed-chat-words',
     },
 ]
 

@@ -1,0 +1,133 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ13 · Words before a deal falls through{% endblock %}
+{% block head %}
+<style>
+.cloud { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center; gap: 4px 14px; min-height: 220px; padding: 12px 4px; line-height: 1.15; }
+.cloud span { color: var(--text-primary); cursor: default; }
+.cloud span.hot { color: var(--series-2); font-weight: 600; }
+.cloud-legend { display: flex; gap: 16px; font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+.cloud-legend b { color: var(--series-2); }
+</style>
+{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">What students write before a deal falls through</h2>
+<section class="card">
+  <h2>Word cloud</h2>
+  <p class="sub" id="cloud-sub">Bigger words were written more times in the last messages of cancelled or abandoned chats.</p>
+  <div class="cloud" id="cloud" aria-label="Word cloud of the chats that fell through"></div>
+  <div class="cloud-legend"><span><b>Orange</b>: more common than in chats that ended in a sale</span><span>Hover a word for its numbers</span></div>
+</section>
+
+<div class="grid2">
+  <section class="card">
+    <h2>Most repeated phrases</h2>
+    <p class="sub">Two words written one after the other, counted over all the chats that fell through.</p>
+    <div class="chart-box tall"><canvas id="c-phrases" role="img" aria-label="Most repeated two-word phrases"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Failed vs. completed chats</h2>
+    <p class="sub">Share of chats that use each word, for the words that stand out the most in failed chats.</p>
+    <div class="chart-box tall"><canvas id="c-compare" role="img" aria-label="Share of failed and completed chats using each word"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method" id="method"></ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PRICE_WORDS = ['precio', 'rebaja', 'descuento', 'caro', 'cara', 'barato', 'menos', 'price', 'cheaper', 'discount', 'expensive'];
+const TIME_WORDS = ['hora', 'horario', 'manana', 'hoy', 'clase', 'tarde', 'semana', 'time', 'tomorrow', 'today', 'class'];
+
+function render(d) {
+  setAnswer(HEADLINES[13](d));
+  const failed = d.chats.cancelled + d.chats.abandoned;
+
+  tiles('tiles', [
+    { label: 'Chats that fell through', value: nf.format(d.conversations_analyzed), hint: `${nf.format(d.chats.cancelled)} cancelled · ${nf.format(d.chats.abandoned)} abandoned` },
+    { label: 'Messages read', value: nf.format(d.messages_analyzed), hint: `last ${d.last_messages} of each chat` },
+    { label: 'Chats that ended in a sale', value: nf.format(d.completed_conversations_compared), hint: 'used as the comparison' },
+    { label: 'Chats still open', value: nf.format(d.chats.open) },
+  ]);
+
+  const cloud = el('cloud');
+  if (!d.words.length) {
+    cloud.innerHTML = `<p class="sub">No word repeats in ${d.min_conversations} or more failed chats yet.</p>`;
+  } else {
+    const max = Math.max(...d.words.map(w => w.count));
+    const size = c => Math.round(13 + 27 * Math.sqrt(c / max));
+    cloud.innerHTML = [...d.words].sort((a, b) => a.word.localeCompare(b.word)).map(w => {
+      const tip = `${w.word}: written ${plural(w.count, 'time')}, in ${fmtPct(w.share * 100)} of failed chats and ${fmtPct(w.completed_share * 100)} of completed ones`;
+      return `<span class="${w.share > w.completed_share ? 'hot' : ''}" style="font-size:${size(w.count)}px" data-tip="${esc(tip)}" aria-label="${esc(tip)}">${esc(w.word)}</span>`;
+    }).join('');
+  }
+
+  const phrases = d.phrases.slice(0, 10);
+  draw('c-phrases', {
+    type: 'bar',
+    data: { labels: phrases.map(p => p.phrase), datasets: [bar('Times written', phrases.map(p => p.count), 1)] },
+    options: baseOptions({
+      legend: false,
+      horizontal: true,
+      counts: true,
+      plugins: { tooltip: { callbacks: { afterLabel: c => `in ${plural(phrases[c.dataIndex].conversations, 'chat')}` } } },
+    }),
+  });
+
+  const compare = d.distinctive_words.slice(0, 8);
+  draw('c-compare', {
+    type: 'bar',
+    data: {
+      labels: compare.map(w => w.word),
+      datasets: [
+        bar('Failed chats', compare.map(w => +(w.share * 100).toFixed(1)), 2),
+        bar('Completed chats', compare.map(w => +(w.completed_share * 100).toFixed(1)), 1),
+      ],
+    },
+    options: baseOptions({
+      horizontal: true,
+      plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtPct(c.parsed.x)}` } } },
+      scales: axes({ horizontal: true, x: { max: 100, ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  const list = [];
+  if (d.conversations_analyzed) {
+    const top = d.words[0];
+    if (top) list.push(`${strong(top.word)} is the most written word before a deal falls through: it appears in ${strong(fmtPct(top.share * 100))} of those chats (${plural(top.conversations, 'chat')}).`);
+    const lead = d.distinctive_words[0];
+    if (lead && d.completed_conversations_compared) list.push(`${strong(lead.word)} separates failed chats from successful ones the most: ${fmtPct(lead.share * 100)} of failed chats use it against ${fmtPct(lead.completed_share * 100)} of the chats that ended in a sale.`);
+    const price = d.words.filter(w => PRICE_WORDS.includes(w.word));
+    if (price.length) list.push(`Price comes up (${price.slice(0, 3).map(w => strong(w.word)).join(', ')}): a price suggestion when publishing (BQ9) could prevent part of these negotiations from breaking.`);
+    const time = d.words.filter(w => TIME_WORDS.includes(w.word));
+    if (time.length) list.push(`Schedules come up (${time.slice(0, 3).map(w => strong(w.word)).join(', ')}): the shared free-time slots of the meeting proposal are worth showing earlier in the chat.`);
+    if (failed) list.push(`${fmtPct(ratioPct(d.chats.abandoned, failed))} of the chats that fell through were abandoned (nobody wrote for ${d.abandoned_after_days} days) rather than cancelled from the app.`);
+    if (d.conversations_analyzed < 20) list.push(`Only ${plural(d.conversations_analyzed, 'chat')} fell through so far: the cloud will change a lot as more chats end.`);
+  }
+  insights('insights', list);
+
+  el('method').innerHTML = [
+    `A chat (<code>ChatRoom</code>) is matched with its exchange by material, buyer and seller. It is <strong>cancelled</strong> when that exchange was cancelled, and <strong>abandoned</strong> when nobody wrote in it for ${d.abandoned_after_days} days and there is no completed or pending exchange.`,
+    `Only the <strong>last ${d.last_messages} messages</strong> before the cancellation (or before the chat went quiet) are read. Meeting proposal cards are skipped because the server writes them.`,
+    'Text is lowercased and accents are removed. Photos (links), e-mails, numbers, words shorter than 3 letters, connectors and greetings are dropped.',
+    `A word or phrase only shows up when at least <strong>${d.min_conversations} different chats</strong> use it, so names or personal details from a single conversation never reach the dashboard.`,
+    'Chats that ended in a completed exchange are read the same way and used as the comparison: a word is highlighted when a larger share of failed chats use it.',
+  ].map(t => `<li>${t}</li>`).join('');
+
+  table('t-data', ['Word', 'Times written', 'Chats', 'Failed chats (%)', 'Completed chats (%)'],
+    d.words.map(w => [w.word, w.count, w.conversations, nf1.format(w.share * 100), nf1.format(w.completed_share * 100)]));
+}
+start(render);
+</script>
+{% endblock %}

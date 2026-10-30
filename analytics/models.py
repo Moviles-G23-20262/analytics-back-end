@@ -34,6 +34,10 @@ class ExchangeStatus(models.TextChoices):
     COMPLETED = 'COMPLETED', 'Completed'
     CANCELLED = 'CANCELLED', 'Cancelled'
 
+class MessageType(models.TextChoices):
+    TEXT = 'TEXT', 'Text'
+    MEETING = 'MEETING', 'Meeting'
+
 class MeetingZoneType(models.TextChoices):
     LIBRARY = 'LIBRARY', 'Library'
     STUDENT_CENTER = 'STUDENT_CENTER', 'Student Center'
@@ -112,6 +116,7 @@ class Message(models.Model):
     chat_room = models.ForeignKey(ChatRoom, on_delete=models.DO_NOTHING, db_column='chatRoomId', related_name='messages')
     sender = models.ForeignKey(User, on_delete=models.DO_NOTHING, db_column='senderId', related_name='sent_messages')
     content = models.TextField()
+    type = models.CharField(max_length=20, choices=MessageType.choices, default=MessageType.TEXT)
     is_read = models.BooleanField(db_column='isRead', default=False)
     created_at = models.DateTimeField(db_column='createdAt')
 
@@ -143,6 +148,7 @@ class Exchange(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=ExchangeStatus.choices, default=ExchangeStatus.PENDING)
     completed_at = models.DateTimeField(db_column='completedAt', null=True, blank=True)
+    cancelled_at = models.DateTimeField(db_column='cancelledAt', null=True, blank=True)
     meeting_point = models.ForeignKey(MeetingPoint, on_delete=models.DO_NOTHING, db_column='meetingPointId', null=True, blank=True, related_name='exchanges')
     lat = models.FloatField(null=True, blank=True)
     lng = models.FloatField(null=True, blank=True)

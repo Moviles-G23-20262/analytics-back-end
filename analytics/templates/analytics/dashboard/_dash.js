@@ -200,6 +200,12 @@ const HEADLINES = {
     const all = total(points.map(p => p.total));
     return `${strong(points[0].name)} is the busiest meeting point (${nf.format(points[0].total)} of ${plural(all, 'exchange')}), and exchanges peak at ${strong(hourLabel(argMax(hours)))} (campus time).`;
   },
+  13(d) {
+    if (!d.conversations_analyzed) return 'No chat has ended in a cancelled or abandoned exchange yet.';
+    if (!d.words.length) return `${plural(d.conversations_analyzed, 'chat')} fell through, but no word repeats in ${d.min_conversations} of them yet.`;
+    const top = d.words.slice(0, 3).map(w => strong(w.word)).join(', ');
+    return `Right before a deal falls through, students write ${top} the most (last ${d.last_messages} messages of ${plural(d.conversations_analyzed, 'cancelled or abandoned chat')}).`;
+  },
 };
 
 // Fetch the page's endpoint, render, and re-render when the OS theme changes. Resolves to a redraw function.

@@ -36,6 +36,7 @@ def api_root(request):
             "buyer_journey_funnel": "/analytics/buyer-journey-funnel/",
             "chat_to_meeting_point": "/analytics/chat-to-meeting-point/",
             "chat_agreement": "/analytics/chat-agreement/<chatRoomId>/",
+            "failed_chat_words": "/analytics/failed-chat-words/",
             "price_stats": "/analytics/price-stats/?category=BOOKS&condition=GOOD"
         }
     })
