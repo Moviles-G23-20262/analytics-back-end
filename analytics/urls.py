@@ -14,4 +14,5 @@ urlpatterns = [
     path('price-stats/', views.price_stats, name='price-stats'),
     path('chat-to-meeting-point/', views.chat_to_meeting_point, name='chat-to-meeting-point'),
     path('chat-agreement/<uuid:chat_room_id>/', views.chat_agreement, name='chat-agreement'),
+    path('failed-chat-words/', views.failed_chat_words, name='failed-chat-words'),
 ]
