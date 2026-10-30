@@ -197,3 +197,19 @@ class AnalyticsEvent(models.Model):
     class Meta:
         managed = False
         db_table = 'AnalyticsEvent'
+
+
+
+class Rating(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    exchange = models.ForeignKey(Exchange, on_delete=models.DO_NOTHING, db_column='exchangeId', related_name='ratings')
+    rater = models.ForeignKey(User, on_delete=models.DO_NOTHING, db_column='raterId', related_name='ratings_given')
+    rated = models.ForeignKey(User, on_delete=models.DO_NOTHING, db_column='ratedId', related_name='ratings_received')
+    stars = models.IntegerField()
+    tags = ArrayField(models.CharField(max_length=100), default=list)
+    review = models.TextField(null=True, blank=True)
+    created_at = models.DateTimeField(db_column='createdAt')
+
+    class Meta:
+        managed = False
+        db_table = 'Rating'
