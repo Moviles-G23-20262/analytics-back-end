@@ -6,6 +6,7 @@ urlpatterns = [
     path('activity-times/', views.activity_by_time, name='activity-by-time'),
     path('wishlist-conversion/', views.wishlist_smart_match_conversion, name='wishlist-conversion'),
     path('empty-fields/', views.empty_fields, name='empty-fields'),
+    path('photos-vs-contacts/', views.photos_vs_contacts, name='photos-vs-contacts'),
     path('price-variation/', views.price_variation, name='price-variation'),
     path('time-to-sell/', views.time_to_sell, name='time-to-sell'),
     path('average-ticket/', views.average_ticket, name='average-ticket'),

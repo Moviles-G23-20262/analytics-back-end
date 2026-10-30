@@ -28,6 +28,7 @@ uv run python manage.py test
 | Route | BQ | Status |
 |---|---|---|
 | `/analytics/buyer-journey-funnel/` | 2 | done |
+| `/analytics/photos-vs-contacts/` | 3 | done for the number of photos (photos per listing against distinct buyers who opened a chat, by bucket 0/1/2/3+, with the 3+ lift and Pearson r); angles and close-ups need image labelling and are not stored |
 | `/analytics/chat-to-meeting-point/` | 4 | done |
 | `/analytics/chat-agreement/<chatRoomId>/` | 4 | done (one chat: `{messagesToAgreement, timeToAgreement}` in minutes, from its first `MEETING_CONFIRMED` event's `clientCreatedAt`) |
 | `/analytics/activity-times/` | 5 | done |
@@ -40,7 +41,6 @@ uv run python manage.py test
 | `/analytics/average-ticket/` | 14 | done (average ticket: `{globalAverage, byCondition}` in COP over completed exchanges, joined with `Material.condition`) |
 | (none yet) | 10 | `# TODO: implement` placeholder in `views.py` |
 | `/analytics/failed-chat-words/` | 13 | done (word cloud of the last 10 messages of cancelled or abandoned chats, compared with chats that ended in a sale; words used in fewer than 2 chats are hidden) |
-| (none yet) | 3 | not started; only partly answerable by SQL |
 | Firebase Crashlytics console | 1 | outside this service |
 
 `business_questions_feasibility.md` states what the data can and cannot answer. Also check `Business-Questions.md` to know what a business question actually is.
@@ -68,4 +68,4 @@ Views already guard against a missing column or enum value with `try/except Prog
 
 - The analytics endpoints have no authentication. Anyone who can reach the service can read the aggregates. Decide whether to add a shared key or session before the dashboard is deployed publicly.
 - Nothing in the code uses a read-only database role (see the design decisions above).
-- The dashboard covers only the implemented questions (2, 4, 5, 6, 7, 8, 9, 11, 12, 13). The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.
+- The dashboard covers only the implemented questions (2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14). The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.

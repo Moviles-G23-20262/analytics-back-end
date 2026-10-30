@@ -152,6 +152,16 @@ const HEADLINES = {
     text += b.total_users_analyzed ? ` and ${strong(nf.format(b.median))} before completing an exchange (medians).` : ' (median). No exchange has been completed yet.';
     return text;
   },
+  3(d) {
+    if (!d.total_listings) return 'No listings yet.';
+    if (!d.total_contacts) return `${plural(d.total_listings, 'listing')}, but no buyer has contacted a seller yet.`;
+    const many = d.buckets[d.buckets.length - 1];
+    if (d.many_photos_lift === null) return `Listings get ${strong(nf.format(d.total_contacts / d.total_listings))} buyer contacts on average; there are not yet listings on both sides of ${d.many_photos_threshold} photos to compare.`;
+    if (!d.many_photos_lift) return `No listing with ${d.many_photos_threshold}+ photos has been contacted yet; listings with fewer photos get ${strong(nf.format(d.total_contacts / (d.total_listings - many.listings)))} contacts on average.`;
+    const more = d.many_photos_lift >= 1;
+    return `Listings with ${d.many_photos_threshold}+ photos get ${strong(nf.format(many.mean_contacts))} buyer contacts on average, ` +
+      `${strong(nf1.format(more ? d.many_photos_lift : 1 / d.many_photos_lift) + '×')} ${more ? 'more' : 'fewer'} than listings with fewer photos.`;
+  },
   4(d) {
     if (!d.conversations_analyzed) return 'No conversation has reached a meeting point agreement yet.';
     return `Buyer and seller exchange ${strong(nf.format(d.messages_before_agreement.median))} messages over ${strong(fmtMinutes(d.minutes_to_agreement.median))} (medians) before agreeing on a meeting point.`;
