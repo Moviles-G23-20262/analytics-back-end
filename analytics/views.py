@@ -1046,6 +1046,12 @@ DASHBOARD_QUESTIONS = [
         'question': 'Which specific campus locations (visualized as a heat map) are most frequently used for item exchanges, and how does this density shift during different hours of the day?',
         'endpoint': 'meeting-point-usage',
     },
+    {
+        'number': 13,
+        'title': 'Words before a deal falls through',
+        'question': 'What are the most frequently used words and phrases (word cloud) in the in-app chat messages immediately before a transaction is cancelled or abandoned?',
+        'endpoint': 'failed-chat-words',
+    },
 ]
 
 
