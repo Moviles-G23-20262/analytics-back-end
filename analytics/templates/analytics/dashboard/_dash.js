@@ -197,6 +197,15 @@ const HEADLINES = {
     if (!d.items_compared) return `${plural(d.listings, 'listing')}, but no item has been listed more than once yet.`;
     return `The same item is listed with a median spread of ${strong(fmtPct(d.median_spread_pct))} between its cheapest and most expensive listing, across ${plural(d.items_compared, 'item')} listed more than once.`;
   },
+  10(d) {
+    const s = d.summary;
+    if (!s.total_listings) return 'No listings yet.';
+    if (!s.dead_listings) return `${plural(s.total_listings, 'listing')}, and none has stayed unsold past ${s.stale_days} days.`;
+    const topCluster = d.clusters[0];
+    return `${strong(fmtPct(s.dead_share * 100))} of listings remain unsold after ${s.stale_days} days ` +
+      `(${nf.format(s.dead_listings)} of ${nf.format(s.total_listings)}, median ${strong(nf1.format(s.median_days_active_dead) + ' days')} active)` +
+      (topCluster ? `; largest pattern: ${strong(topCluster.label)} (${nf.format(topCluster.count)}).` : '.');
+  },
   11(d) {
     if (!d.sold_listings) return 'No listing has been sold yet.';
     const days = v => nf1.format(v) + (v === 1 ? ' day' : ' days');

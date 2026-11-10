@@ -1,0 +1,303 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ10 · Dead listings & patterns{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="controls">
+  <span>Unsold stale threshold</span>
+  <div class="seg" role="group" aria-label="Stale threshold in days">
+    <button type="button" data-stale="7" aria-pressed="false">7 days</button>
+    <button type="button" data-stale="14" aria-pressed="true">14 days</button>
+    <button type="button" data-stale="21" aria-pressed="false">21 days</button>
+    <button type="button" data-stale="30" aria-pressed="false">30 days</button>
+  </div>
+</div>
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">How long unsold listings stay active &amp; hidden patterns</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Unsold survival curve</h2>
+    <p class="sub">Share of published listings remaining unsold after N days (Kaplan-Meier estimate across sold and active listings).</p>
+    <div class="chart-box"><canvas id="c-survival" role="img" aria-label="Kaplan-Meier survival curve of unsold listings"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Dead-listing clusters</h2>
+    <p class="sub">Deterministic K-Means groups (by price ratio, photo count, seller rating, and days active).</p>
+    <div class="chart-box"><canvas id="c-clusters" role="img" aria-label="Dead listing pattern clusters"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Common patterns by category, price, photos &amp; seller rating</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>By category</h2>
+    <p class="sub">Share of listings in each category that stayed unsold past the threshold.</p>
+    <div class="chart-box tall"><canvas id="c-category" role="img" aria-label="Dead rate per category"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>By price vs. category median</h2>
+    <p class="sub">Dead rate grouped by asking price relative to the category median price.</p>
+    <div class="chart-box tall"><canvas id="c-price" role="img" aria-label="Dead rate by price band"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>By photo count</h2>
+    <p class="sub">Listings without photos or with only 1 photo stall much more often.</p>
+    <div class="chart-box"><canvas id="c-photos" role="img" aria-label="Dead rate by photo count"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>By seller rating</h2>
+    <p class="sub">Dead rate grouped by seller reputation score.</p>
+    <div class="chart-box"><canvas id="c-rating" role="img" aria-label="Dead rate by seller rating"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>A listing counts as <strong>dead</strong> when its status is still <code>AVAILABLE</code> (not sold or reserved) and its age at query time meets or exceeds the selected stale threshold (default 14 days).</li>
+    <li><strong>Time active</strong> for unsold listings is measured from <code>Material.createdAt</code> to now; for sold listings it uses completed exchange time so both cohorts are comparable.</li>
+    <li>The <strong>survival curve</strong> uses the right-censored Kaplan-Meier estimator so recently created fresh listings do not bias longer horizons.</li>
+    <li>Each dead listing is described by four standardized signals — price ratio vs. category median, number of photos, seller rating, and days active — and grouped via deterministic K-Means (up to 4 clusters).</li>
+    <li>Sellers can review per-listing risk alerts and apply suggested price drops in the mobile app's Listing Health Advisor view.</li>
+  </ul>
+  <details open><summary>Dead-listing pattern clusters</summary><div class="table-wrap"><table id="t-clusters"></table></div></details>
+  <details><summary>Longest-stale dead listings &amp; suggested actions (top 50)</summary><div class="table-wrap"><table id="t-dead"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const pct = v => +(v * 100).toFixed(1);
+let latestData = null;
+
+function render(d) {
+  latestData = d;
+  setAnswer(HEADLINES[10](d));
+  const s = d.summary;
+  const cmp = d.comparisons;
+
+  tiles('tiles', [
+    {
+      label: 'Published listings',
+      value: nf.format(s.total_listings),
+      hint: `${nf.format(s.sold_listings)} sold · ${nf.format(s.active_fresh_listings + s.reserved_listings)} active/reserved`,
+    },
+    {
+      label: `Dead listings (≥${s.stale_days}d)`,
+      value: nf.format(s.dead_listings),
+      hint: `${fmtPct(s.dead_share * 100)} of published listings`,
+    },
+    {
+      label: 'Median days active (dead)',
+      value: s.dead_listings ? `${nf1.format(s.median_days_active_dead)} d` : '–',
+      hint: s.sold_listings ? `Sold median: ${nf1.format(s.median_days_to_sell)} d` : 'No sold comparison yet',
+    },
+    {
+      label: 'Hidden pattern clusters',
+      value: nf.format(d.clusters.length),
+      hint: `${fmtPct(s.never_sold_share * 100)} overall never sold`,
+    },
+  ]);
+
+  const surv = d.survival_curve;
+  draw('c-survival', {
+    type: 'line',
+    data: {
+      labels: surv.map(p => `${p.day}d`),
+      datasets: [line('Still unsold (%)', surv.map(p => pct(p.survival_rate)), 1, { tension: 0.25 })],
+    },
+    options: baseOptions({
+      legend: false,
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: c => `${fmtPct(c.parsed.y)} still unsold`,
+            afterLabel: c => {
+              const p = surv[c.dataIndex];
+              return `${nf.format(p.at_risk)} at risk · ${nf.format(p.sold_cumulative)} sold by day ${p.day}`;
+            },
+          },
+        },
+      },
+      scales: axes({ y: { max: 100, ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  const clusters = d.clusters;
+  draw('c-clusters', {
+    type: 'bar',
+    data: {
+      labels: clusters.map(c => c.label),
+      datasets: [bar('Dead listings', clusters.map(c => c.count), 2)],
+    },
+    options: baseOptions({
+      legend: false,
+      horizontal: true,
+      counts: true,
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: c => `${plural(c.parsed.x, 'dead listing')} (${fmtPct(clusters[c.dataIndex].share * 100)})`,
+            afterBody: cs => {
+              const cl = clusters[cs[0].dataIndex];
+              return [
+                `Avg price vs median: ${fmtPct(cl.avg_price_ratio * 100)}`,
+                `Avg photos: ${nf1.format(cl.avg_photos)} · Seller rating: ${nf1.format(cl.avg_seller_rating)}`,
+                `Median days active: ${nf1.format(cl.median_days_active)}d`,
+                `Action: ${cl.recommended_action}`,
+              ];
+            },
+          },
+        },
+      },
+    }),
+  });
+
+  const cats = d.breakdowns.by_category;
+  draw('c-category', {
+    type: 'bar',
+    data: {
+      labels: cats.map(r => prettify(r.category)),
+      datasets: [bar('Dead rate (%)', cats.map(r => pct(r.dead_rate)), 2)],
+    },
+    options: baseOptions({
+      legend: false,
+      horizontal: true,
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: c => `${fmtPct(c.parsed.x)} dead`,
+            afterLabel: c => {
+              const r = cats[c.dataIndex];
+              return `${nf.format(r.dead)} dead of ${nf.format(r.total)} (${nf.format(r.sold)} sold · median ${nf1.format(r.median_days_active_dead)}d)`;
+            },
+          },
+        },
+      },
+      scales: axes({ horizontal: true, x: { max: 100, ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  const drawBucketChart = (id, rows, colorIdx) => draw(id, {
+    type: 'bar',
+    data: {
+      labels: rows.map(r => r.label),
+      datasets: [bar('Dead rate (%)', rows.map(r => pct(r.dead_rate)), colorIdx)],
+    },
+    options: baseOptions({
+      legend: false,
+      plugins: {
+        tooltip: {
+          callbacks: {
+            label: c => `${fmtPct(c.parsed.y)} dead`,
+            afterLabel: c => {
+              const r = rows[c.dataIndex];
+              return `${nf.format(r.dead)} dead of ${nf.format(r.total)} (${nf.format(r.sold)} sold)`;
+            },
+          },
+        },
+      },
+      scales: axes({ y: { max: 100, ticks: { callback: v => v + '%' } } }),
+    }),
+  });
+
+  drawBucketChart('c-price', d.breakdowns.by_price_band, 2);
+  drawBucketChart('c-photos', d.breakdowns.by_photos, 1);
+  drawBucketChart('c-rating', d.breakdowns.by_seller_rating, 3);
+
+  const list = [];
+  if (!s.total_listings) {
+    list.push('No listings published yet.');
+  } else {
+    if (s.dead_listings && cmp.sold.count) {
+      const deadRatio = cmp.dead.median_price_ratio ? fmtPct(cmp.dead.median_price_ratio * 100) : 'n/a';
+      const soldRatio = cmp.sold.median_price_ratio ? fmtPct(cmp.sold.median_price_ratio * 100) : 'n/a';
+      list.push(
+        `Dead listings sit active for a median of ${strong(nf1.format(cmp.dead.median_days) + ' days')} vs ${strong(nf1.format(cmp.sold.median_days) + ' days')} for sold items, ` +
+        `ask ${strong(deadRatio)} vs ${strong(soldRatio)} of category median price, and average ${strong(nf1.format(cmp.dead.mean_photos))} vs ${strong(nf1.format(cmp.sold.mean_photos))} photos.`
+      );
+    } else if (s.dead_listings) {
+      list.push(`${plural(s.dead_listings, 'dead listing')} stayed unsold for a median of ${strong(nf1.format(cmp.dead.median_days) + ' days')}, with ${strong(fmtPct(cmp.dead.zero_contact_share * 100))} receiving zero buyer messages.`);
+    }
+    if (clusters.length) {
+      const top = clusters[0];
+      list.push(`Largest dead-listing pattern: ${strong(top.label)} (${nf.format(top.count)} listings, ${fmtPct(top.share * 100)}), averaging ${nf1.format(top.avg_photos)} photos and ${nf1.format(top.avg_days_active)} days active. Recommended action: ${esc(top.recommended_action)}`);
+    }
+    const nonZeroCats = cats.filter(c => c.dead > 0).sort((a, b) => b.dead_rate - a.dead_rate);
+    if (nonZeroCats.length) {
+      const topCat = nonZeroCats[0];
+      list.push(`${strong(prettify(topCat.category))} has the highest dead rate at ${strong(fmtPct(topCat.dead_rate * 100))} (${nf.format(topCat.dead)} of ${nf.format(topCat.total)} listings).`);
+    }
+    const fair = d.breakdowns.by_price_band.find(b => b.key === 'fair');
+    const steep = d.breakdowns.by_price_band.find(b => b.key === 'steep');
+    if (fair && steep && fair.total && steep.total && steep.dead_rate > fair.dead_rate) {
+      list.push(`Heavily overpriced listings (>40% above category median) go stale at ${strong(fmtPct(steep.dead_rate * 100))} compared to ${strong(fmtPct(fair.dead_rate * 100))} for fairly priced items.`);
+    }
+    if (s.total_listings < 20) {
+      list.push(`Only ${plural(s.total_listings, 'listing')} in the dataset so far: treat cluster boundaries as early signals.`);
+    }
+  }
+  insights('insights', list);
+
+  table(
+    't-clusters',
+    ['Cluster', 'Count', 'Share', 'Avg price vs median', 'Avg photos', 'Avg rating', 'Median days', 'Zero-contact', 'Recommended action'],
+    clusters.map(cl => [
+      cl.label,
+      cl.count,
+      fmtPct(cl.share * 100),
+      fmtPct(cl.avg_price_ratio * 100),
+      nf1.format(cl.avg_photos),
+      nf1.format(cl.avg_seller_rating),
+      nf1.format(cl.median_days_active),
+      fmtPct(cl.zero_contact_share * 100),
+      cl.recommended_action,
+    ])
+  );
+
+  table(
+    't-dead',
+    ['Title', 'Category', 'Days', 'Price', 'Cat. median', 'Photos', 'Contacts', 'Cluster', 'Risk', 'Suggested price', 'Recommendation'],
+    d.dead_listings.map(item => [
+      item.title,
+      prettify(item.category),
+      nf1.format(item.days_active),
+      '$' + nf.format(item.price),
+      item.category_median_price !== null ? '$' + nf.format(item.category_median_price) : '–',
+      item.photos,
+      item.contacts,
+      item.cluster_label || '–',
+      `${item.risk_score} (${item.risk_level})`,
+      item.suggested_price !== null ? `$${nf.format(item.suggested_price)} (-${item.recommended_drop_pct}%)` : '–',
+      item.recommendation,
+    ])
+  );
+}
+
+async function fetchWithThreshold(days) {
+  setStatus(`Loading with ${days}-day threshold…`);
+  try {
+    const response = await fetch(`${ENDPOINT}?staleDays=${encodeURIComponent(days)}`);
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    setStatus('');
+    themeDefaults();
+    render(data);
+  } catch (error) {
+    setStatus('Could not reload (' + error.message + ').', true);
+  }
+}
+
+document.querySelectorAll('[data-stale]').forEach(btn => btn.addEventListener('click', () => {
+  document.querySelectorAll('[data-stale]').forEach(b => b.setAttribute('aria-pressed', b === btn));
+  fetchWithThreshold(btn.dataset.stale);
+}));
+
+start(initialData => render(latestData || initialData));
+</script>
+{% endblock %}
