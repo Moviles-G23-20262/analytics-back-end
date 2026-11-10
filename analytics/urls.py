@@ -8,6 +8,7 @@ urlpatterns = [
     path('empty-fields/', views.empty_fields, name='empty-fields'),
     path('photos-vs-contacts/', views.photos_vs_contacts, name='photos-vs-contacts'),
     path('price-variation/', views.price_variation, name='price-variation'),
+    path('dead-listings/', views.dead_listings, name='dead-listings'),
     path('time-to-sell/', views.time_to_sell, name='time-to-sell'),
     path('average-ticket/', views.average_ticket, name='average-ticket'),
     path('meeting-points/', views.meeting_point_usage, name='meeting-point-usage'),

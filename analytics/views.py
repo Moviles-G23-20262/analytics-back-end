@@ -1,5 +1,7 @@
+import math
 import re
 import unicodedata
+import uuid
 from collections import Counter
 from datetime import timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
@@ -19,7 +21,7 @@ from django.db.models.functions import ExtractHour, ExtractWeekDay
 from .models import Material, AnalyticsEvent, AnalyticsEventType
 from .models import Exchange, Notification, NotificationType, WishlistItem
 from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, ExchangeStatus
-from .models import ChatRoom, Message, MaterialCategory, MaterialCondition, MessageType
+from .models import ChatRoom, Message, MaterialCategory, MaterialCondition, MaterialStatus, MessageType
 from .models import Rating
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
@@ -647,7 +649,656 @@ def photos_vs_contacts(request):
     return JsonResponse(summarize_photos_vs_contacts(listings, timezone.now()))
 
 # Business Question 10
-# TODO: implement
+DEFAULT_STALE_DAYS = 14
+SURVIVAL_CHECKPOINTS = [0, 1, 3, 7, 14, 21, 30, 45, 60]
+DEAD_LISTING_CLUSTERS_MAX = 4
+MAX_DEAD_ITEMS_LISTED = 50
+
+DEAD_PRICE_BANDS = [
+    ('underpriced', 'Under market (< -15%)'),
+    ('fair', 'Fair market (-15% to +15%)'),
+    ('overpriced', 'Above market (+15% to +40%)'),
+    ('steep', 'Heavily overpriced (> +40%)'),
+    ('unpriced', 'Unpriced'),
+]
+
+DEAD_RATING_BUCKETS = [
+    ('unrated', 'New / unrated seller'),
+    ('low', 'Low rating (< 3.5)'),
+    ('solid', 'Solid (3.5 - 4.4)'),
+    ('top', 'Top rated (4.5+)'),
+]
+
+
+def _classify_price_band(price, price_ratio):
+    if price <= 0 or price_ratio is None:
+        return 'unpriced'
+    if price_ratio < 0.85:
+        return 'underpriced'
+    if price_ratio <= 1.15:
+        return 'fair'
+    if price_ratio <= 1.40:
+        return 'overpriced'
+    return 'steep'
+
+
+def _classify_photo_bucket(photos):
+    if photos <= 0:
+        return 'No photos'
+    if photos == 1:
+        return '1 photo'
+    if photos == 2:
+        return '2 photos'
+    return '3+ photos'
+
+
+def _classify_rating_bucket(rating):
+    if rating <= 0:
+        return 'unrated'
+    if rating < 3.5:
+        return 'low'
+    if rating < 4.5:
+        return 'solid'
+    return 'top'
+
+
+def _round_suggested_price(target, current_price):
+    if current_price <= 0 or target <= 0:
+        return None
+    # Keep suggested price cleanly rounded in COP when in thousands, otherwise 2 decimals.
+    rounded = round(target / 100.0) * 100.0 if current_price >= 1000 else round(target, 2)
+    rounded = min(rounded, round(current_price * 0.95, 2) if current_price < 1000 else float(int(current_price) - 100))
+    if rounded <= 0 or rounded >= current_price:
+        return round(max(1.0, current_price * 0.85), 2) if current_price > 1 else None
+    return round(float(rounded), 2)
+
+
+def _build_dead_survival_curve(observations):
+    if not observations:
+        return [
+            {'day': d, 'survival_rate': 0.0, 'at_risk': 0, 'sold_cumulative': 0}
+            for d in SURVIVAL_CHECKPOINTS
+        ]
+
+    event_times = {}
+    for duration, sold in observations:
+        if sold:
+            event_times[duration] = event_times.get(duration, 0) + 1
+    sorted_events = sorted(event_times.items(), key=lambda kv: kv[0])
+
+    # Precompute survival at each distinct event time (Kaplan-Meier estimator).
+    km_steps = []
+    surv = 1.0
+    for t, d_j in sorted_events:
+        n_j = sum(1 for duration, _ in observations if duration >= t)
+        if n_j > 0:
+            surv *= 1.0 - (d_j / n_j)
+        km_steps.append((t, surv))
+
+    curve = []
+    for day in SURVIVAL_CHECKPOINTS:
+        if day == 0:
+            cur_surv = 1.0
+            sold_cum = 0
+        else:
+            cur_surv = 1.0
+            for t, step_surv in km_steps:
+                if t <= day:
+                    cur_surv = step_surv
+                else:
+                    break
+            sold_cum = sum(1 for duration, sold in observations if sold and duration <= day)
+        at_risk = sum(1 for duration, _ in observations if duration >= day)
+        curve.append({
+            'day': day,
+            'survival_rate': round(max(0.0, min(1.0, cur_surv)), 4),
+            'at_risk': at_risk,
+            'sold_cumulative': sold_cum,
+        })
+    return curve
+
+
+def _cohort_summary(rows):
+    days = [r['duration_days'] for r in rows if r['duration_known']]
+    ratios = [r['price_ratio'] for r in rows if r['price_ratio'] is not None]
+    photos = [r['photos'] for r in rows]
+    ratings = [r['seller_rating'] for r in rows]
+    n = len(rows)
+    return {
+        'count': n,
+        'median_days': round(_median(days), 2) if days else 0.0,
+        'mean_days': round(sum(days) / len(days), 2) if days else 0.0,
+        'median_price_ratio': round(_median(ratios), 4) if ratios else None,
+        'mean_photos': round(sum(photos) / n, 2) if n else 0.0,
+        'zero_photo_share': round(sum(1 for p in photos if p == 0) / n, 4) if n else 0.0,
+        'zero_contact_share': round(sum(1 for r in rows if r['contacts'] == 0) / n, 4) if n else 0.0,
+        'mean_seller_rating': round(sum(ratings) / n, 2) if n else 0.0,
+    }
+
+
+def _bucket_stats(rows, key_fn, ordered_keys):
+    grouped = {k: [] for k, _ in ordered_keys}
+    for row in rows:
+        k = key_fn(row)
+        if k in grouped:
+            grouped[k].append(row)
+
+    out = []
+    for k, label in ordered_keys:
+        group = grouped[k]
+        total = len(group)
+        dead = [r for r in group if r['lifecycle'] == 'dead']
+        sold = [r for r in group if r['lifecycle'] == 'sold']
+        dead_days = [r['duration_days'] for r in dead if r['duration_known']]
+        out.append({
+            'key': k,
+            'label': label,
+            'total': total,
+            'dead': len(dead),
+            'sold': len(sold),
+            'dead_rate': round(len(dead) / total, 4) if total else 0.0,
+            'median_days_active_dead': round(_median(dead_days), 2) if dead_days else 0.0,
+        })
+    return out
+
+
+def _squared_distance(a, b):
+    return sum((x - y) ** 2 for x, y in zip(a, b))
+
+
+def _label_dead_cluster(avg_price_ratio, avg_photos, avg_rating, avg_days, stale_days, top_category):
+    signals = []
+    if avg_price_ratio >= 1.25:
+        signals.append(('Overpriced above market', 'Lower price toward the category median'))
+    if avg_photos < 1.5:
+        signals.append(('Too few photos', 'Upload 2-3 clear photos showing condition'))
+    if avg_rating < 0.5:
+        signals.append(('New / unrated sellers', 'Add course code, edition, and condition proof to build trust'))
+    elif avg_rating < 3.5:
+        signals.append(('Low seller rating', 'Highlight exact item condition and adjust price slightly for trust'))
+    if avg_days >= max(stale_days * 2, 28):
+        signals.append(('Long-tail stale listings', 'Refresh title/course tags or apply a clearance discount'))
+
+    if len(signals) >= 2:
+        label = f'{signals[0][0]} + {signals[1][0].lower()}'
+        action = f'{signals[0][1]}; {signals[1][1].lower()}.'
+    elif len(signals) == 1:
+        label = signals[0][0]
+        action = f'{signals[0][1]}.'
+    else:
+        cat_name = top_category.replace('_', ' ').title()
+        label = f'Fair-priced low-demand ({cat_name})'
+        action = 'Offer a 10-15% price drop or share course code tags to attract buyers.'
+    return label, action
+
+
+def _cluster_dead_listings(dead_rows, stale_days):
+    if not dead_rows:
+        return []
+
+    # Sort deterministically so clustering is reproducible regardless of SQL row order.
+    ordered = sorted(
+        dead_rows,
+        key=lambda r: (-r['cluster_price_ratio'], r['photos'], r['seller_rating'], -r['duration_days'], r['id']),
+    )
+
+    raw_vectors = [
+        [r['cluster_price_ratio'], float(r['photos']), float(r['seller_rating']), float(r['duration_days'])]
+        for r in ordered
+    ]
+
+    # Z-score standardization per feature axis across the dead-listing cohort.
+    dims = 4
+    n = len(raw_vectors)
+    means = [sum(v[j] for v in raw_vectors) / n for j in range(dims)]
+    stds = []
+    for j in range(dims):
+        variance = sum((v[j] - means[j]) ** 2 for v in raw_vectors) / n
+        stds.append(math.sqrt(variance) if variance > 1e-12 else 1.0)
+
+    scaled = [[(v[j] - means[j]) / stds[j] for j in range(dims)] for v in raw_vectors]
+    unique_scaled = {tuple(round(x, 6) for x in v) for v in scaled}
+    k = min(DEAD_LISTING_CLUSTERS_MAX, len(unique_scaled), n)
+    if k == 0:
+        return []
+
+    # Deterministic farthest-first (Gonzales) initialization from the standardized vectors.
+    first_idx = max(range(n), key=lambda i: sum(x * x for x in scaled[i]))
+    center_indices = [first_idx]
+    while len(center_indices) < k:
+        best_idx = max(
+            (i for i in range(n) if i not in center_indices),
+            key=lambda i: min(_squared_distance(scaled[i], scaled[c]) for c in center_indices),
+        )
+        center_indices.append(best_idx)
+    centers = [list(scaled[i]) for i in center_indices]
+
+    assignments = [0] * n
+    for _ in range(25):
+        new_assignments = [
+            min(range(k), key=lambda c: _squared_distance(scaled[i], centers[c]))
+            for i in range(n)
+        ]
+        # Re-seed any empty cluster with the point farthest from its assigned center.
+        counts = Counter(new_assignments)
+        for c in range(k):
+            if counts[c] == 0:
+                farthest = max(range(n), key=lambda i: _squared_distance(scaled[i], centers[new_assignments[i]]))
+                old_c = new_assignments[farthest]
+                if counts[old_c] > 1:
+                    new_assignments[farthest] = c
+                    counts[old_c] -= 1
+                    counts[c] += 1
+
+        if new_assignments == assignments:
+            break
+        assignments = new_assignments
+        for c in range(k):
+            members = [scaled[i] for i, a in enumerate(assignments) if a == c]
+            if members:
+                centers[c] = [sum(m[j] for m in members) / len(members) for j in range(dims)]
+
+    groups = {}
+    for row, cid in zip(ordered, assignments):
+        groups.setdefault(cid, []).append(row)
+
+    prelim = []
+    for cid, rows in groups.items():
+        ratios = [r['price_ratio'] for r in rows if r['price_ratio'] is not None]
+        avg_ratio = sum(ratios) / len(ratios) if ratios else 1.0
+        avg_photos = sum(r['photos'] for r in rows) / len(rows)
+        avg_rating = sum(r['seller_rating'] for r in rows) / len(rows)
+        avg_days = sum(r['duration_days'] for r in rows) / len(rows)
+        med_days = _median([r['duration_days'] for r in rows])
+        cat_counts = Counter(r['category'] for r in rows)
+        top_category = cat_counts.most_common(1)[0][0]
+        label, action = _label_dead_cluster(avg_ratio, avg_photos, avg_rating, avg_days, stale_days, top_category)
+        prelim.append({
+            '_rows': rows,
+            'label': label,
+            'recommended_action': action,
+            'count': len(rows),
+            'share': round(len(rows) / n, 4),
+            'avg_price_ratio': round(avg_ratio, 4),
+            'median_price_ratio': round(_median(ratios), 4) if ratios else 1.0,
+            'avg_photos': round(avg_photos, 2),
+            'avg_seller_rating': round(avg_rating, 2),
+            'avg_days_active': round(avg_days, 2),
+            'median_days_active': round(med_days, 2),
+            'zero_contact_share': round(sum(1 for r in rows if r['contacts'] == 0) / len(rows), 4),
+            'top_category': top_category,
+            'categories': [{'category': cat, 'count': cnt} for cat, cnt in cat_counts.most_common()],
+            'sample_titles': [r['title'] for r in sorted(rows, key=lambda x: (-x['duration_days'], x['title']))[:3]],
+        })
+
+    prelim.sort(key=lambda c: (-c['count'], -c['avg_days_active'], c['label']))
+
+    # Ensure unique cluster labels if two groups share the same primary label.
+    seen_labels = Counter(c['label'] for c in prelim)
+    for idx, c in enumerate(prelim):
+        cluster_id = f'cluster-{idx + 1}'
+        if seen_labels[c['label']] > 1:
+            cat_label = c['top_category'].replace('_', ' ').title()
+            candidate = f"{c['label']} ({cat_label})"
+            c['label'] = candidate if sum(1 for x in prelim if x['label'] == candidate) == 0 else f'{candidate} #{idx + 1}'
+        c['cluster_id'] = cluster_id
+        for row in c['_rows']:
+            row['cluster_id'] = cluster_id
+            row['cluster_label'] = c['label']
+        del c['_rows']
+
+    return prelim
+
+
+def _evaluate_listing_risk(row, stale_days):
+    reasons = []
+    score = 0.0
+    days_active = row['duration_days']
+    price = row['price']
+    benchmark = row['benchmark_price']
+    ratio = row['price_ratio']
+    photos = row['photos']
+    contacts = row['contacts']
+    rating = row['seller_rating']
+    is_dead = row['lifecycle'] == 'dead'
+
+    age_pts = min(40.0, (days_active / max(stale_days, 1)) * 20.0)
+    score += age_pts
+    if is_dead:
+        reasons.append(f'Unsold for {round(days_active, 1)} days (threshold {stale_days}d)')
+    elif days_active >= max(1.0, stale_days * 0.5):
+        reasons.append(f'Active for {round(days_active, 1)} days with no sale yet')
+
+    if ratio is not None and ratio > 1.15:
+        over_pct = round((ratio - 1.0) * 100)
+        score += 30.0 if ratio >= 1.40 else 18.0
+        reasons.append(f'Priced {over_pct}% above category median')
+
+    if photos == 0:
+        score += 20.0
+        reasons.append('No photos uploaded')
+    elif photos == 1:
+        score += 10.0
+        reasons.append('Only 1 photo (3+ photos attract more buyers)')
+
+    if rating <= 0:
+        score += 5.0
+        reasons.append('New or unrated seller profile')
+    elif rating < 3.5:
+        score += 12.0
+        reasons.append(f'Low seller rating ({rating:.1f}/5)')
+
+    if contacts == 0 and days_active >= 3.0:
+        score += 10.0
+        reasons.append('No buyer messages yet')
+
+    risk_score = min(100, round(score))
+    if is_dead or risk_score >= 60:
+        risk_level = 'high'
+    elif risk_score >= 35:
+        risk_level = 'medium'
+    elif risk_score >= 15:
+        risk_level = 'watch'
+    else:
+        risk_level = 'low'
+
+    suggested_price = None
+    recommended_drop_pct = 0.0
+    if price > 0:
+        if benchmark and ratio is not None and ratio > 1.15:
+            target = benchmark * (0.95 if is_dead and contacts == 0 else 1.0)
+            suggested_price = _round_suggested_price(target, price)
+        elif is_dead:
+            suggested_price = _round_suggested_price(price * 0.85, price)
+    if suggested_price is not None and price > 0:
+        recommended_drop_pct = round((price - suggested_price) / price * 100, 1)
+
+    actions = []
+    if suggested_price is not None:
+        actions.append(f'Drop price by ~{recommended_drop_pct:.0f}% (to {suggested_price:,.0f})')
+    if photos < 2:
+        actions.append('add 2-3 clear photos')
+    if contacts == 0 and not actions:
+        actions.append('refresh title & course code')
+    recommendation = '; '.join(actions).capitalize() + '.' if actions else 'Healthy pace - monitor inquiries.'
+
+    return {
+        'id': row['id'],
+        'title': row['title'],
+        'category': row['category'],
+        'price': round(price, 2),
+        'category_median_price': round(benchmark, 2) if benchmark is not None else None,
+        'price_ratio': round(ratio, 4) if ratio is not None else None,
+        'suggested_price': suggested_price,
+        'recommended_drop_pct': recommended_drop_pct,
+        'photos': photos,
+        'contacts': contacts,
+        'seller_id': row['seller_id'],
+        'seller_rating': round(rating, 2),
+        'days_active': round(days_active, 2),
+        'is_dead': is_dead,
+        'cluster_id': row.get('cluster_id'),
+        'cluster_label': row.get('cluster_label'),
+        'risk_score': risk_score,
+        'risk_level': risk_level,
+        'reasons': reasons,
+        'recommendation': recommendation,
+    }
+
+
+def summarize_dead_listings(listings, now, stale_days=DEFAULT_STALE_DAYS, seller_id=None, sold_exchanges=None):
+    now_utc = _as_utc(now)
+    sold_at_by_material = {}
+    for ex in (sold_exchanges or []):
+        if ex.get('status') not in (None, ExchangeStatus.COMPLETED):
+            continue
+        mat_id = str(ex.get('material_id') or '')
+        comp = ex.get('completed_at')
+        if not mat_id or comp is None:
+            continue
+        comp_utc = _as_utc(comp)
+        if mat_id not in sold_at_by_material or comp_utc < sold_at_by_material[mat_id]:
+            sold_at_by_material[mat_id] = comp_utc
+
+    parsed = []
+    skipped = 0
+    for idx, row in enumerate(listings):
+        created_raw = row.get('created_at')
+        if created_raw is None:
+            skipped += 1
+            continue
+        created_utc = _as_utc(created_raw)
+        mat_id = str(row.get('id') or f'row-{idx}')
+        status = row.get('status') or MaterialStatus.AVAILABLE
+        sold_raw = row.get('sold_at') or sold_at_by_material.get(mat_id)
+        is_sold = (status == MaterialStatus.SOLD) or (sold_raw is not None)
+
+        price = float(row.get('price') or 0.0)
+        photos = len(row.get('image_urls') or [])
+        contacts = int(row.get('contacts') or 0)
+        seller_rating = float(row.get('seller_rating') or 0.0)
+        category = row.get('category') or MaterialCategory.OTHER
+
+        if is_sold:
+            end_raw = sold_raw or row.get('updated_at')
+            if end_raw is not None:
+                end_utc = _as_utc(end_raw)
+                if end_utc >= created_utc:
+                    duration_days = (end_utc - created_utc).total_seconds() / 86400.0
+                    duration_known = True
+                else:
+                    duration_days = None
+                    duration_known = False
+            else:
+                duration_days = None
+                duration_known = False
+            lifecycle = 'sold'
+        elif status == MaterialStatus.RESERVED:
+            duration_days = max((now_utc - created_utc).total_seconds() / 86400.0, 0.0)
+            duration_known = True
+            lifecycle = 'reserved'
+        else:
+            duration_days = max((now_utc - created_utc).total_seconds() / 86400.0, 0.0)
+            duration_known = True
+            lifecycle = 'dead' if duration_days >= stale_days else 'active_fresh'
+
+        parsed.append({
+            'id': mat_id,
+            'title': row.get('title') or 'Untitled',
+            'category': category,
+            'price': price,
+            'condition': row.get('condition'),
+            'status': status,
+            'photos': photos,
+            'contacts': contacts,
+            'seller_id': str(row.get('seller_id') or ''),
+            'seller_rating': seller_rating,
+            'lifecycle': lifecycle,
+            'duration_days': duration_days,
+            'duration_known': duration_known,
+            'cluster_id': None,
+            'cluster_label': None,
+        })
+
+    # Category price benchmarks: completed sales preferred when >= 3 samples exist, else all priced items.
+    sold_prices_by_cat = {}
+    all_prices_by_cat = {}
+    for item in parsed:
+        if item['price'] <= 0:
+            continue
+        all_prices_by_cat.setdefault(item['category'], []).append(item['price'])
+        if item['lifecycle'] == 'sold':
+            sold_prices_by_cat.setdefault(item['category'], []).append(item['price'])
+
+    benchmarks = {}
+    for cat in {item['category'] for item in parsed}:
+        sold_list = sold_prices_by_cat.get(cat, [])
+        all_list = all_prices_by_cat.get(cat, [])
+        if len(sold_list) >= 3:
+            benchmarks[cat] = _median(sold_list)
+        elif all_list:
+            benchmarks[cat] = _median(all_list)
+        else:
+            benchmarks[cat] = None
+
+    for item in parsed:
+        bench = benchmarks.get(item['category'])
+        item['benchmark_price'] = bench
+        ratio = (item['price'] / bench) if (item['price'] > 0 and bench and bench > 0) else None
+        item['price_ratio'] = ratio
+        item['cluster_price_ratio'] = min(ratio, 3.0) if ratio is not None else 1.0
+        item['price_band'] = _classify_price_band(item['price'], ratio)
+        item['photo_bucket'] = _classify_photo_bucket(item['photos'])
+        item['rating_bucket'] = _classify_rating_bucket(item['seller_rating'])
+
+    sold_rows = [r for r in parsed if r['lifecycle'] == 'sold']
+    reserved_rows = [r for r in parsed if r['lifecycle'] == 'reserved']
+    fresh_rows = [r for r in parsed if r['lifecycle'] == 'active_fresh']
+    dead_rows = [r for r in parsed if r['lifecycle'] == 'dead']
+
+    observations = [
+        (r['duration_days'], r['lifecycle'] == 'sold')
+        for r in parsed
+        if r['duration_known'] and r['duration_days'] is not None
+    ]
+    survival_curve = _build_dead_survival_curve(observations)
+    clusters = _cluster_dead_listings(dead_rows, stale_days)
+
+    categories_present = sorted({r['category'] for r in parsed})
+    by_category = []
+    for cat in categories_present:
+        cat_rows = [r for r in parsed if r['category'] == cat]
+        cat_dead = [r for r in cat_rows if r['lifecycle'] == 'dead']
+        cat_sold = [r for r in cat_rows if r['lifecycle'] == 'sold']
+        cat_reserved = [r for r in cat_rows if r['lifecycle'] == 'reserved']
+        cat_fresh = [r for r in cat_rows if r['lifecycle'] == 'active_fresh']
+        cat_dead_days = [r['duration_days'] for r in cat_dead if r['duration_known']]
+        cat_prices = [r['price'] for r in cat_rows if r['price'] > 0]
+        cat_sold_prices = [r['price'] for r in cat_sold if r['price'] > 0]
+        cat_ratios = [r['price_ratio'] for r in cat_dead if r['price_ratio'] is not None]
+        by_category.append({
+            'category': cat,
+            'total': len(cat_rows),
+            'sold': len(cat_sold),
+            'reserved': len(cat_reserved),
+            'active_fresh': len(cat_fresh),
+            'dead': len(cat_dead),
+            'dead_rate': round(len(cat_dead) / len(cat_rows), 4) if cat_rows else 0.0,
+            'median_days_active_dead': round(_median(cat_dead_days), 2) if cat_dead_days else 0.0,
+            'median_price': round(_median(cat_prices), 2) if cat_prices else None,
+            'median_sold_price': round(_median(cat_sold_prices), 2) if cat_sold_prices else None,
+            'median_price_ratio_dead': round(_median(cat_ratios), 4) if cat_ratios else None,
+        })
+    by_category.sort(key=lambda r: (-r['dead'], -r['dead_rate'], r['category']))
+
+    dead_evaluated = [_evaluate_listing_risk(r, stale_days) for r in dead_rows]
+    dead_evaluated.sort(key=lambda r: (-r['days_active'], -r['risk_score'], r['id']))
+
+    target_seller = str(seller_id) if seller_id is not None else None
+    available_rows = [r for r in parsed if r['lifecycle'] in ('dead', 'active_fresh')]
+    if target_seller is not None:
+        seller_all = [r for r in parsed if r['seller_id'] == target_seller]
+        seller_available = [r for r in available_rows if r['seller_id'] == target_seller]
+        evaluated_seller = [_evaluate_listing_risk(r, stale_days) for r in seller_available]
+        at_risk = [r for r in evaluated_seller if r['is_dead'] or r['risk_score'] >= 15]
+        at_risk.sort(key=lambda r: (-(1 if r['is_dead'] else 0), -r['risk_score'], -r['days_active'], r['id']))
+        seller_summary = {
+            'seller_id': target_seller,
+            'total_listings': len(seller_all),
+            'sold_listings': sum(1 for r in seller_all if r['lifecycle'] == 'sold'),
+            'reserved_listings': sum(1 for r in seller_all if r['lifecycle'] == 'reserved'),
+            'active_fresh_listings': sum(1 for r in seller_all if r['lifecycle'] == 'active_fresh'),
+            'dead_listings': sum(1 for r in seller_all if r['lifecycle'] == 'dead'),
+            'at_risk_count': len(at_risk),
+            'healthy_listings': max(0, len(seller_available) - len(at_risk)),
+        }
+    else:
+        evaluated_avail = [_evaluate_listing_risk(r, stale_days) for r in available_rows]
+        at_risk = [r for r in evaluated_avail if r['is_dead'] or r['risk_score'] >= 20]
+        at_risk.sort(key=lambda r: (-(1 if r['is_dead'] else 0), -r['risk_score'], -r['days_active'], r['id']))
+        at_risk = at_risk[:20]
+        seller_summary = None
+
+    total = len(parsed)
+    dead_cohort = _cohort_summary(dead_rows)
+    sold_cohort = _cohort_summary(sold_rows)
+
+    return {
+        'summary': {
+            'total_listings': total,
+            'sold_listings': len(sold_rows),
+            'reserved_listings': len(reserved_rows),
+            'active_fresh_listings': len(fresh_rows),
+            'dead_listings': len(dead_rows),
+            'skipped': skipped,
+            'stale_days': stale_days,
+            'dead_share': round(len(dead_rows) / total, 4) if total else 0.0,
+            'never_sold_share': round((total - len(sold_rows)) / total, 4) if total else 0.0,
+            'median_days_active_dead': dead_cohort['median_days'],
+            'mean_days_active_dead': dead_cohort['mean_days'],
+            'median_days_to_sell': sold_cohort['median_days'],
+        },
+        'survival_curve': survival_curve,
+        'comparisons': {
+            'dead': dead_cohort,
+            'sold': sold_cohort,
+        },
+        'breakdowns': {
+            'by_category': by_category,
+            'by_price_band': _bucket_stats(parsed, lambda r: r['price_band'], DEAD_PRICE_BANDS),
+            'by_photos': _bucket_stats(parsed, lambda r: r['photo_bucket'], [(b, b) for _, b in PHOTO_BUCKETS]),
+            'by_seller_rating': _bucket_stats(parsed, lambda r: r['rating_bucket'], DEAD_RATING_BUCKETS),
+        },
+        'clusters': clusters,
+        'dead_listings': dead_evaluated[:MAX_DEAD_ITEMS_LISTED],
+        'at_risk_listings': at_risk,
+        'seller_summary': seller_summary,
+    }
+
+
+def dead_listings(request):
+    raw_stale = request.GET.get('staleDays')
+    if raw_stale is not None:
+        if not raw_stale.isdigit() or not (1 <= int(raw_stale) <= 365):
+            return JsonResponse({'error': 'staleDays must be an integer between 1 and 365'}, status=400)
+        stale_days = int(raw_stale)
+    else:
+        stale_days = DEFAULT_STALE_DAYS
+
+    raw_seller_id = request.GET.get('sellerId')
+    seller_id = None
+    if raw_seller_id:
+        try:
+            seller_id = str(uuid.UUID(raw_seller_id))
+        except ValueError:
+            return JsonResponse({'error': 'sellerId must be a valid UUID'}, status=400)
+
+    listings = list(
+        Material.objects.annotate(
+            contacts=Count('chat_rooms__buyer', distinct=True),
+        ).values(
+            'id', 'title', 'category', 'price', 'condition', 'status', 'image_urls',
+            'seller_id', 'created_at', 'updated_at', 'contacts',
+            seller_rating=F('seller__rating'),
+        )
+    )
+    try:
+        sold_exchanges = list(
+            Exchange.objects.filter(status=ExchangeStatus.COMPLETED).values('material_id', 'completed_at', 'status')
+        )
+    except (DataError, ProgrammingError) as err:
+        logger.warning('Could not query completed exchanges for dead listings: %s', err)
+        sold_exchanges = []
+
+    return JsonResponse(
+        summarize_dead_listings(
+            listings,
+            timezone.now(),
+            stale_days=stale_days,
+            seller_id=seller_id,
+            sold_exchanges=sold_exchanges,
+        )
+    )
 
 # Business Question 11
 # Upper bound (days) of each bar in the time-to-sell histogram; the last bar is open-ended.
@@ -1219,6 +1870,12 @@ DASHBOARD_QUESTIONS = [
         'title': 'Price variation',
         'question': 'How do prices of the same item vary (same book edition, same model) between sellers, faculties, and item condition?',
         'endpoint': 'price-variation',
+    },
+    {
+        'number': 10,
+        'title': 'Dead listings & patterns',
+        'question': 'Which listings are published but never sold, how long do they stay active, and what hidden patterns do they have in common (clustering by price, category, photos, seller rating)?',
+        'endpoint': 'dead-listings',
     },
     {
         'number': 11,
