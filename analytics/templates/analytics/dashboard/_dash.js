@@ -246,6 +246,11 @@ const HEADLINES = {
     if (!d.words.length) return `${plural(d.conversations_analyzed, 'chat')} fell through, but no word repeats in ${d.min_conversations} of them yet.`;
     const top = d.words.slice(0, 3).map(w => strong(w.word)).join(', ');
     return `Right before a deal falls through, students write ${top} the most (last ${d.last_messages} messages of ${plural(d.conversations_analyzed, 'cancelled or abandoned chat')}).`;
+  },  16(d) {
+    if (d.available === false) return 'Meetup data is not available yet.';
+    const o = d.overall;
+    if (!o.agreed) return o.upcoming ? `${plural(o.upcoming, 'meetup')} agreed in the chat, none has happened yet.` : 'No meetup has been agreed in the chat yet.';
+    return `${strong(fmtPct(o.completion_rate * 100))} of the meetups agreed in the chat end in a completed exchange (${nf.format(o.completed)} of ${nf.format(o.agreed)}), and ${strong(fmtPct(o.agreed_first_try_share * 100))} are agreed at the first proposal.`;
   },
 };
 

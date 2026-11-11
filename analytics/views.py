@@ -2006,6 +2006,12 @@ DASHBOARD_QUESTIONS = [
         'question': 'What is the average ticket (in COP) of a completed campus sale, overall and for each item condition?',
         'endpoint': 'average-ticket',
     },
+    {
+        'number': 16,
+        'title': 'Meetups that happen',
+        'question': 'What share of the meetups agreed in the chat end in a completed exchange, and how often is a meetup changed or dropped, by meeting point and hour of the day?',
+        'endpoint': 'meetup-outcomes',
+    },
 ]
 
 

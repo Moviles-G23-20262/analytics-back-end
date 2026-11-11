@@ -1,0 +1,109 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ16 · Meetups that happen{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">Where do agreed meetups turn into a sale?</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Outcome per meeting point</h2>
+    <p class="sub">Meetups whose time has passed, most used point first.</p>
+    <div class="chart-box tall"><canvas id="c-points" role="img" aria-label="Completed, cancelled and not closed meetups per meeting point"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Agreed and completed by hour</h2>
+    <p class="sub">Hour of the meetup in campus time ({{ campus_time_zone }}).</p>
+    <div class="chart-box tall"><canvas id="c-hours" role="img" aria-label="Agreed and completed meetups by hour of day"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>A <strong>meetup</strong> is a meeting proposal with status <code>ACCEPTED</code>: the place and time both students agreed in the chat.</li>
+    <li>Only meetups whose end time has passed have an outcome. The ones still to come are counted apart as <strong>upcoming</strong>.</li>
+    <li><strong>Completed</strong>: the buyer of that chat completed the exchange of that listing. <strong>Cancelled</strong>: the exchange was cancelled and never completed. <strong>Not closed</strong>: no exchange was completed or cancelled, so the meetup was missed or never confirmed in the app.</li>
+    <li><strong>Changes before agreeing</strong> are the proposals of the same chat that were declined or withdrawn before the accepted one. They are counted over every agreed meetup, upcoming ones included.</li>
+    <li>The hour is the start of the meetup in campus time (<code>{{ campus_time_zone }}</code>).</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  setAnswer(HEADLINES[16](d));
+  if (d.available === false) {
+    setStatus('Meetup data is not available yet (the MeetingProposal table is missing).', true);
+    return;
+  }
+  const o = d.overall;
+  const points = d.by_point;
+  const hours = HOURS.map(h => d.by_hour.find(r => r.hour === h) || { hour: h, agreed: 0, completed: 0 });
+  if (!o.agreed) setStatus(o.upcoming ? 'No agreed meetup has happened yet.' : 'No meetup has been agreed in the chat yet.');
+
+  tiles('tiles', [
+    { label: 'Meetups that already happened', value: nf.format(o.agreed), hint: plural(o.upcoming, 'upcoming meetup') },
+    { label: 'Ended in a sale', value: fmtPct(o.completion_rate * 100), hint: `${nf.format(o.completed)} of ${nf.format(o.agreed)}` },
+    { label: 'Not closed', value: fmtPct(ratioPct(o.not_closed, o.agreed)), hint: `${nf.format(o.cancelled)} cancelled` },
+    { label: 'Agreed at the first proposal', value: fmtPct(o.agreed_first_try_share * 100), hint: `${nf.format(o.average_changes_before_agreement)} changes on average` },
+  ]);
+
+  draw('c-points', {
+    type: 'bar',
+    data: {
+      labels: points.map(p => p.name),
+      datasets: [
+        bar('Completed', points.map(p => p.completed), 1),
+        bar('Cancelled', points.map(p => p.cancelled), 2),
+        bar('Not closed', points.map(p => p.not_closed), 3),
+      ],
+    },
+    options: baseOptions({
+      horizontal: true,
+      counts: true,
+      scales: axes({ horizontal: true, counts: true, x: { stacked: true }, y: { stacked: true } }),
+      plugins: { tooltip: { callbacks: { footer: items => `${fmtPct(points[items[0].dataIndex].completion_rate * 100)} ended in a sale` } } },
+    }),
+  });
+
+  draw('c-hours', {
+    type: 'bar',
+    data: {
+      labels: HOURS.map(hourLabel),
+      datasets: [bar('Agreed', hours.map(h => h.agreed), 2), bar('Completed', hours.map(h => h.completed), 1)],
+    },
+    options: baseOptions({ counts: true }),
+  });
+
+  const list = [];
+  if (o.agreed) {
+    list.push(`${strong(fmtPct(o.completion_rate * 100))} of the meetups that already happened ended in a completed exchange (${nf.format(o.completed)} of ${nf.format(o.agreed)}).`);
+    if (o.not_closed) list.push(`${strong(plural(o.not_closed, 'meetup'))} never closed in the app: the students missed it or did not confirm the exchange.`);
+    const ranked = points.filter(p => p.agreed >= 2);
+    if (ranked.length >= 2) {
+      const best = ranked.reduce((a, b) => (b.completion_rate > a.completion_rate ? b : a));
+      const worst = ranked.reduce((a, b) => (b.completion_rate < a.completion_rate ? b : a));
+      if (best !== worst) list.push(`${strong(best.name)} turns ${strong(fmtPct(best.completion_rate * 100))} of its meetups into a sale, against ${strong(fmtPct(worst.completion_rate * 100))} at ${strong(worst.name)}.`);
+    }
+    const busy = hours.filter(h => h.agreed);
+    if (busy.length) {
+      const peak = busy.reduce((a, b) => (b.agreed > a.agreed ? b : a));
+      list.push(`Most meetups are set at ${strong(hourLabel(peak.hour))}, with ${plural(peak.agreed, 'meetup')}.`);
+    }
+  }
+  list.push(`${strong(fmtPct(o.agreed_first_try_share * 100))} of the agreements were reached at the first proposal; on average a chat changes ${strong(nf.format(o.average_changes_before_agreement))} proposals before agreeing.`);
+  insights('insights', list);
+
+  table('t-data', ['Meeting point', 'Meetups', 'Completed', 'Cancelled', 'Not closed', 'Ended in a sale'],
+    points.map(p => [p.name, nf.format(p.agreed), nf.format(p.completed), nf.format(p.cancelled), nf.format(p.not_closed), fmtPct(p.completion_rate * 100)]));
+}
+start(render);
+</script>
+{% endblock %}
