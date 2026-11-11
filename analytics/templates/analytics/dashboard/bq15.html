@@ -39,8 +39,10 @@
 <script>
 function render(d) {
   setAnswer(HEADLINES[15](d));
-  const entries = Object.entries(d.byCondition);  // the endpoint already orders them from best to worst condition
-  const hasSales = d.globalAverage !== null;
+  // The endpoint already orders the conditions from best to worst. With no completed sale it sends
+  // globalAverage null and an empty byCondition; anything that is not a finite number is ignored.
+  const entries = Object.entries(d.byCondition || {}).filter(e => Number.isFinite(e[1]));
+  const hasSales = Number.isFinite(d.globalAverage);
 
   const best = entries.length ? entries.reduce((a, b) => (b[1] > a[1] ? b : a)) : null;
   const worst = entries.length ? entries.reduce((a, b) => (b[1] < a[1] ? b : a)) : null;
@@ -63,7 +65,7 @@ function render(d) {
     }),
   });
 
-  const gaps = entries.map(e => e[1] - (d.globalAverage || 0));
+  const gaps = entries.map(e => e[1] - (hasSales ? d.globalAverage : 0));
   draw('c-gap', {
     type: 'bar',
     data: { labels: entries.map(e => prettify(e[0])), datasets: [bar('Difference vs overall', gaps, 2)] },
@@ -77,7 +79,7 @@ function render(d) {
   const list = [];
   if (hasSales) {
     list.push(`The overall average ticket is ${strong(fmtCop(d.globalAverage))}.`);
-    if (best && worst && best[0] !== worst[0]) {
+    if (best && worst && best[0] !== worst[0] && worst[1] > 0) {
       list.push(`${strong(prettify(best[0]))} items sell for ${strong(fmtCop(best[1]))} on average, ${strong(nf1.format(best[1] / worst[1]) + '×')} what ${strong(prettify(worst[0]))} items fetch (${fmtCop(worst[1])}).`);
     }
     const inOrder = entries.every((e, i) => i === 0 || e[1] <= entries[i - 1][1]);

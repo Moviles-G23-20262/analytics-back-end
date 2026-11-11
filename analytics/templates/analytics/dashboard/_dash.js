@@ -23,7 +23,7 @@ function fmtMinutes(m) {
 }
 
 const copFormat = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
-const fmtCop = v => copFormat.format(v);
+const fmtCop = v => (typeof v === 'number' && Number.isFinite(v) ? copFormat.format(v) : '–');  // null / undefined / NaN: a dash, never 'NaN'
 
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const series = n => css('--series-' + n);
@@ -231,11 +231,12 @@ const HEADLINES = {
       (complaint ? `; the most repeated word in negative reviews is ${strong(complaint.word)}.` : '.');
   },
   15(d) {
-    if (d.globalAverage === null) return 'No sale has been completed yet.';
-    const entries = Object.entries(d.byCondition);
+    if (!Number.isFinite(d.globalAverage)) return 'No sale has been completed yet.';
+    const entries = Object.entries(d.byCondition || {}).filter(e => Number.isFinite(e[1]));
     let text = `A completed campus sale is worth ${strong(fmtCop(d.globalAverage))} on average`;
-    if (entries.length >= 2) {
-      const best = entries.reduce((a, b) => (b[1] > a[1] ? b : a)), worst = entries.reduce((a, b) => (b[1] < a[1] ? b : a));
+    const best = entries.length ? entries.reduce((a, b) => (b[1] > a[1] ? b : a)) : null;
+    const worst = entries.length ? entries.reduce((a, b) => (b[1] < a[1] ? b : a)) : null;
+    if (best && worst && best[0] !== worst[0]) {
       text += `; ${strong(prettify(best[0]))} items fetch the most (${fmtCop(best[1])}) and ${strong(prettify(worst[0]))} the least (${fmtCop(worst[1])}).`;
     } else text += '.';
     return text;
