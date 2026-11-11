@@ -39,6 +39,7 @@ def api_root(request):
             "chat_to_meeting_point": "/analytics/chat-to-meeting-point/",
             "chat_agreement": "/analytics/chat-agreement/<chatRoomId>/",
             "failed_chat_words": "/analytics/failed-chat-words/",
+            "meetup_outcomes": "/analytics/meetup-outcomes/",
             "price_stats": "/analytics/price-stats/?category=BOOKS&condition=GOOD"
         }
     })

@@ -18,4 +18,5 @@ urlpatterns = [
     path('review-sentiment/', views.review_sentiment, name='review-sentiment'),
     path('chat-agreement/<uuid:chat_room_id>/', views.chat_agreement, name='chat-agreement'),
     path('failed-chat-words/', views.failed_chat_words, name='failed-chat-words'),
+    path('meetup-outcomes/', views.meetup_outcomes, name='meetup-outcomes'),
 ]

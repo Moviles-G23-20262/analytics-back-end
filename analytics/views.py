@@ -23,6 +23,7 @@ from .models import Exchange, Notification, NotificationType, WishlistItem
 from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, ExchangeStatus
 from .models import ChatRoom, Message, MaterialCategory, MaterialCondition, MaterialStatus, MessageType
 from .models import Rating
+from .models import MeetingPoint, MeetingProposal, MeetingProposalStatus
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
 
@@ -1818,6 +1819,104 @@ def failed_chat_words(request):
     }
     outcomes = classify_chats(chat_rooms, exchanges, last_message_at, timezone.now())
     return JsonResponse(summarize_failed_chat_words(outcomes, messages))
+
+
+def _campus_hour(moment):
+    return _as_utc(moment).astimezone(ZoneInfo(CAMPUS_TIME_ZONE)).hour
+
+
+def _outcome_counts():
+    return {'agreed': 0, 'completed': 0, 'cancelled': 0, 'not_closed': 0}
+
+
+def _with_rate(counts):
+    return {**counts, 'completion_rate': _share(counts['completed'], counts['agreed'])}
+
+
+def summarize_meetup_outcomes(proposals, chat_rooms, exchanges, points, now):
+    statuses_by_room = {}
+    for exchange in exchanges:
+        statuses_by_room.setdefault(_room_key(exchange), set()).add(exchange['status'])
+    room_keys = {str(room['id']): _room_key(room) for room in chat_rooms}
+
+    by_room = {}
+    for proposal in proposals:
+        by_room.setdefault(str(proposal['chat_room_id']), []).append(proposal)
+
+    overall = _outcome_counts()
+    by_point, by_hour = {}, {}
+    upcoming = first_try = 0
+    changes = []
+
+    for room_id, room_proposals in by_room.items():
+        statuses = statuses_by_room.get(room_keys.get(room_id), set())
+        for meetup in (p for p in room_proposals if p['status'] == MeetingProposalStatus.ACCEPTED):
+            before = sum(
+                1 for p in room_proposals
+                if p['status'] in (MeetingProposalStatus.DECLINED, MeetingProposalStatus.CANCELLED)
+                and _as_utc(p['created_at']) < _as_utc(meetup['created_at'])
+            )
+            changes.append(before)
+            if before == 0:
+                first_try += 1
+            if _as_utc(meetup['ends_at']) > now:
+                upcoming += 1
+                continue
+
+            if ExchangeStatus.COMPLETED in statuses:
+                outcome = 'completed'
+            elif ExchangeStatus.CANCELLED in statuses:
+                outcome = 'cancelled'
+            else:
+                outcome = 'not_closed'
+
+            point_id = str(meetup['meeting_point_id'])
+            hour = _campus_hour(meetup['starts_at'])
+            for counts in (
+                overall,
+                by_point.setdefault(point_id, _outcome_counts()),
+                by_hour.setdefault(hour, _outcome_counts()),
+            ):
+                counts['agreed'] += 1
+                counts[outcome] += 1
+
+    point_rows = [
+        {
+            'meeting_point_id': point_id,
+            'name': points.get(point_id, {}).get('name', 'Unknown point'),
+            'is_monitored': points.get(point_id, {}).get('is_monitored', False),
+            **_with_rate(counts),
+        }
+        for point_id, counts in by_point.items()
+    ]
+    point_rows.sort(key=lambda r: (-r['agreed'], -r['completion_rate'], r['name']))
+    hour_rows = [{'hour': hour, **_with_rate(counts)} for hour, counts in sorted(by_hour.items())]
+
+    return {
+        'overall': {
+            **_with_rate(overall),
+            'upcoming': upcoming,
+            'agreed_first_try_share': _share(first_try, len(changes)),
+            'average_changes_before_agreement': round(sum(changes) / len(changes), 2) if changes else 0.0,
+        },
+        'by_point': point_rows,
+        'by_hour': hour_rows,
+    }
+
+
+def meetup_outcomes(request):
+    try:
+        proposals = list(MeetingProposal.objects.values(
+            'chat_room_id', 'status', 'starts_at', 'ends_at', 'created_at', 'meeting_point_id'))
+    except ProgrammingError:
+        logger.warning('MeetingProposal table is missing; apply the Prisma migration that creates it')
+        return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'available': False})
+
+    chat_rooms = list(ChatRoom.objects.values('id', 'material_id', 'buyer_id', 'seller_id'))
+    exchanges = list(Exchange.objects.values('material_id', 'buyer_id', 'seller_id', 'status'))
+    points = {str(p['id']): p for p in MeetingPoint.objects.values('id', 'name', 'is_monitored')}
+    summary = summarize_meetup_outcomes(proposals, chat_rooms, exchanges, points, timezone.now())
+    return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'available': True, **summary})
 
 
 # Dashboard
