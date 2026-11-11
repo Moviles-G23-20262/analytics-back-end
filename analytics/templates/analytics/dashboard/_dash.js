@@ -22,6 +22,9 @@ function fmtMinutes(m) {
   return nf.format(m / 1440) + ' days';
 }
 
+const copFormat = new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
+const fmtCop = v => copFormat.format(v);
+
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const series = n => css('--series-' + n);
 const el = id => document.getElementById(id);
@@ -226,6 +229,16 @@ const HEADLINES = {
     const complaint = d.top_keywords.negative[0];
     return `${strong(fmtPct(ratioPct(s.positive, n)))} of written reviews are positive, ${strong(fmtPct(ratioPct(s.neutral, n)))} neutral and ${strong(fmtPct(ratioPct(s.negative, n)))} negative` +
       (complaint ? `; the most repeated word in negative reviews is ${strong(complaint.word)}.` : '.');
+  },
+  15(d) {
+    if (d.globalAverage === null) return 'No sale has been completed yet.';
+    const entries = Object.entries(d.byCondition);
+    let text = `A completed campus sale is worth ${strong(fmtCop(d.globalAverage))} on average`;
+    if (entries.length >= 2) {
+      const best = entries.reduce((a, b) => (b[1] > a[1] ? b : a)), worst = entries.reduce((a, b) => (b[1] < a[1] ? b : a));
+      text += `; ${strong(prettify(best[0]))} items fetch the most (${fmtCop(best[1])}) and ${strong(prettify(worst[0]))} the least (${fmtCop(worst[1])}).`;
+    } else text += '.';
+    return text;
   },
   13(d) {
     if (!d.conversations_analyzed) return 'No chat has ended in a cancelled or abandoned exchange yet.';

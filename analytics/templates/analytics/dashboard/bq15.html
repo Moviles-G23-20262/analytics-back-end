@@ -1,0 +1,93 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ15 · Average ticket{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">What a sale is worth</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Average ticket by condition</h2>
+    <p class="sub">Average price of completed sales for each item condition, best condition first.</p>
+    <div class="chart-box"><canvas id="c-condition" role="img" aria-label="Average ticket in COP per item condition"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Gap to the overall average</h2>
+    <p class="sub">How far each condition sits above or below the overall average ticket.</p>
+    <div class="chart-box"><canvas id="c-gap" role="img" aria-label="Difference between each condition and the overall average ticket"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>A sale is counted when its exchange has status <code>COMPLETED</code>. Pending and cancelled exchanges are not counted.</li>
+    <li>The <strong>ticket</strong> is <code>Exchange.price</code>, in Colombian pesos. Each exchange is joined to its material to know the item condition.</li>
+    <li>The <strong>overall average</strong> is the total of all completed sales divided by the number of sales, so a condition with many sales weighs more than one with few.</li>
+    <li>Sales whose material has no condition count in the overall average but not in any condition bar.</li>
+    <li>Averages are rounded to whole pesos.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  setAnswer(HEADLINES[15](d));
+  const entries = Object.entries(d.byCondition);  // the endpoint already orders them from best to worst condition
+  const hasSales = d.globalAverage !== null;
+
+  const best = entries.length ? entries.reduce((a, b) => (b[1] > a[1] ? b : a)) : null;
+  const worst = entries.length ? entries.reduce((a, b) => (b[1] < a[1] ? b : a)) : null;
+  tiles('tiles', [
+    { label: 'Overall average ticket', value: hasSales ? fmtCop(d.globalAverage) : '–', hint: hasSales ? 'All completed sales' : 'No completed sales yet' },
+    { label: 'Highest condition', value: best ? fmtCop(best[1]) : '–', hint: best ? esc(prettify(best[0])) : '' },
+    { label: 'Lowest condition', value: worst ? fmtCop(worst[1]) : '–', hint: worst ? esc(prettify(worst[0])) : '' },
+    { label: 'Conditions with sales', value: nf.format(entries.length) },
+  ]);
+
+  const copTick = v => fmtCop(v);
+  draw('c-condition', {
+    type: 'bar',
+    data: { labels: entries.map(e => prettify(e[0])), datasets: [bar('Average ticket', entries.map(e => e[1]), 1)] },
+    options: baseOptions({
+      legend: false,
+      horizontal: true,
+      scales: axes({ horizontal: true, x: { ticks: { callback: copTick } } }),
+      plugins: { tooltip: { callbacks: { label: c => fmtCop(c.parsed.x) } } },
+    }),
+  });
+
+  const gaps = entries.map(e => e[1] - (d.globalAverage || 0));
+  draw('c-gap', {
+    type: 'bar',
+    data: { labels: entries.map(e => prettify(e[0])), datasets: [bar('Difference vs overall', gaps, 2)] },
+    options: baseOptions({
+      legend: false,
+      scales: axes({ y: { beginAtZero: false, ticks: { callback: copTick } } }),
+      plugins: { tooltip: { callbacks: { label: c => (c.parsed.y >= 0 ? '+' : '−') + fmtCop(Math.abs(c.parsed.y)) } } },
+    }),
+  });
+
+  const list = [];
+  if (hasSales) {
+    list.push(`The overall average ticket is ${strong(fmtCop(d.globalAverage))}.`);
+    if (best && worst && best[0] !== worst[0]) {
+      list.push(`${strong(prettify(best[0]))} items sell for ${strong(fmtCop(best[1]))} on average, ${strong(nf1.format(best[1] / worst[1]) + '×')} what ${strong(prettify(worst[0]))} items fetch (${fmtCop(worst[1])}).`);
+    }
+    const inOrder = entries.every((e, i) => i === 0 || e[1] <= entries[i - 1][1]);
+    if (entries.length >= 3) list.push(inOrder ? 'The better the condition, the higher the ticket: prices fall steadily from new to fair.' : 'Ticket does not fall steadily with condition: some worse-condition items sell for more than better ones.');
+    if (entries.length < 4) list.push(`Only ${plural(entries.length, 'condition')} has completed sales so far: expect these numbers to move.`);
+  }
+  insights('insights', list);
+
+  table('t-data', ['Condition', 'Average ticket (COP)', 'Vs overall'], entries.map((e, i) => [prettify(e[0]), fmtCop(e[1]), (gaps[i] >= 0 ? '+' : '−') + fmtCop(Math.abs(gaps[i]))]));
+}
+start(render);
+</script>
+{% endblock %}
