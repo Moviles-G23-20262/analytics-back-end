@@ -38,8 +38,8 @@ uv run python manage.py test
 | `/analytics/empty-fields/` | 8 | done |
 | `/analytics/price-variation/` | 9 | done (asking prices of the same item; `/analytics/price-stats/` keeps the completed-sale ranges for the price suggestion) |
 | `/analytics/time-to-sell/` | 11 | done |
-| `/analytics/average-ticket/` | 14 | done (average ticket: `{globalAverage, byCondition}` in COP over completed exchanges, joined with `Material.condition`) |
-| (none yet) | 10 | `# TODO: implement` placeholder in `views.py` |
+| `/analytics/average-ticket/` | 15 | done (average ticket: `{globalAverage, byCondition}` in COP over completed exchanges, joined with `Material.condition`; dashboard page `/dash-board/bq15/`). It was first numbered 14, which collided with `review-sentiment` |
+| `/analytics/dead-listings/` (optional `?staleDays=`, `?sellerId=`) | 10 | done (survival curve, K-Means pattern clusters and seller risk alerts) |
 | `/analytics/failed-chat-words/` | 13 | done (word cloud of the last 10 messages of cancelled or abandoned chats, compared with chats that ended in a sale; words used in fewer than 2 chats are hidden) |
 | Firebase Crashlytics console | 1 | outside this service |
 
@@ -68,4 +68,4 @@ Views already guard against a missing column or enum value with `try/except Prog
 
 - The analytics endpoints have no authentication. Anyone who can reach the service can read the aggregates. Decide whether to add a shared key or session before the dashboard is deployed publicly.
 - Nothing in the code uses a read-only database role (see the design decisions above).
-- The dashboard covers only the implemented questions (2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14). The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.
+- The dashboard covers every implemented question (2 to 15). `/analytics/chat-agreement/<chatRoomId>/` has no dashboard page: it is one chat, used by the mobile app only. The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.

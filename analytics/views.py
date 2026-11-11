@@ -1344,7 +1344,7 @@ def time_to_sell(request):
     )
     return JsonResponse(summarize_time_to_sell(sales))
 
-# Business Question 14 - Average ticket: what a completed sale is worth, overall and per item condition.
+# Business Question 15 - Average ticket: what a completed sale is worth, overall and per item condition.
 
 def _pesos(total, sales):
     return int(round(float(total) / sales)) if sales else None
@@ -1900,6 +1900,12 @@ DASHBOARD_QUESTIONS = [
         'title': 'Review sentiment',
         'question': 'What is the emotional sentiment (positive, neutral, negative) and the most common keywords found in the written reviews left for buyers and sellers?',
         'endpoint': 'review-sentiment',
+    },
+    {
+        'number': 15,
+        'title': 'Average ticket',
+        'question': 'What is the average ticket (in COP) of a completed campus sale, overall and for each item condition?',
+        'endpoint': 'average-ticket',
     },
 ]
 
