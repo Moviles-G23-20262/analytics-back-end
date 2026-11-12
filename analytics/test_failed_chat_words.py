@@ -67,6 +67,11 @@ class ClassifyChatsTestCase(SimpleTestCase):
         self.assertEqual(outcomes['old'], ('abandoned', quiet))
         self.assertEqual(outcomes['new'], ('open', None))
 
+    def test_dates_without_time_zone_from_prisma_are_read_as_utc(self):
+        quiet = (NOW - timedelta(days=ABANDONED_AFTER_DAYS)).replace(tzinfo=None)
+        outcomes = classify_chats([room('r1')], [], {'r1': quiet}, NOW)
+        self.assertEqual(outcomes['r1'], ('abandoned', quiet))
+
     def test_exchange_of_another_buyer_does_not_count(self):
         outcomes = classify_chats([room('r1', buyer='b1')], [exchange('COMPLETED', buyer='b2', completed_at=START)], {}, NOW)
         self.assertEqual(outcomes['r1'], ('open', None))
