@@ -184,6 +184,8 @@ def calculate_buyer_journey_metrics(listing_views, contacts, exchanges):
     first_exchange_at = {}
     for exchange in exchanges:
         buyer_id = exchange['buyer_id']
+        if exchange['completed_at'] is None:
+            continue
         if buyer_id not in first_exchange_at or exchange['completed_at'] < first_exchange_at[buyer_id]:
             first_exchange_at[buyer_id] = exchange['completed_at']
 
@@ -196,7 +198,7 @@ def buyer_journey_funnel(request):
     events = AnalyticsEvent.objects.values('user_id', 'material_id', 'occurred_at')
     listing_views = events.filter(event_type=AnalyticsEventType.LISTING_VIEW)
     contacts = events.filter(event_type=AnalyticsEventType.CONTACT_SELLER)
-    exchanges = Exchange.objects.values('buyer_id', 'material_id', 'completed_at')
+    exchanges = Exchange.objects.filter(status=ExchangeStatus.COMPLETED).values('buyer_id', 'material_id', 'completed_at')
 
     return JsonResponse(calculate_buyer_journey_metrics(listing_views, contacts, exchanges))
 
