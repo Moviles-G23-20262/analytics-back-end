@@ -1705,7 +1705,7 @@ def classify_chats(chat_rooms, exchanges, last_message_at, now):
         elif ExchangeStatus.CANCELLED in statuses:
             times = [e['cancelled_at'] for e in related if e['status'] == ExchangeStatus.CANCELLED and e['cancelled_at']]
             outcomes[room_id] = ('cancelled', max(times) if times else None)
-        elif last is not None and now - last >= timedelta(days=ABANDONED_AFTER_DAYS):
+        elif last is not None and now - _as_utc(last) >= timedelta(days=ABANDONED_AFTER_DAYS):
             outcomes[room_id] = ('abandoned', last)
         else:
             outcomes[room_id] = ('open', None)
