@@ -70,6 +70,19 @@ class BuyerJourneyMetricsTestCase(SimpleTestCase):
         self.assertEqual(result['views_before_exchange']['mean'], 3.0)
         self.assertEqual(result['views_before_exchange']['total_events'], 3)
 
+    def test_exchanges_that_are_not_completed_are_ignored(self):
+        views = [view('u1', 'm1', 1), view('u1', 'm2', 2), view('u1', 'm3', 5)]
+        exchanges = [
+            {'buyer_id': 'u1', 'material_id': 'm9', 'completed_at': None},
+            {'buyer_id': 'u1', 'material_id': 'm2', 'completed_at': at(3)},
+            {'buyer_id': 'u2', 'material_id': 'm1', 'completed_at': None},
+        ]
+
+        result = calculate_buyer_journey_metrics(views, [], exchanges)
+
+        self.assertEqual(result['views_before_exchange']['total_users_analyzed'], 1)
+        self.assertEqual(result['views_before_exchange']['mean'], 2.0)
+
     def test_median_and_p75_across_users(self):
         views = (
             [view('u1', 'a', 1)] +
