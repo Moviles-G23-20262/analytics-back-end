@@ -38,6 +38,12 @@ class MessageType(models.TextChoices):
     TEXT = 'TEXT', 'Text'
     MEETING = 'MEETING', 'Meeting'
 
+class MeetingProposalStatus(models.TextChoices):
+    PENDING = 'PENDING', 'Pending'
+    ACCEPTED = 'ACCEPTED', 'Accepted'
+    DECLINED = 'DECLINED', 'Declined'
+    CANCELLED = 'CANCELLED', 'Cancelled'
+
 class MeetingZoneType(models.TextChoices):
     LIBRARY = 'LIBRARY', 'Library'
     STUDENT_CENTER = 'STUDENT_CENTER', 'Student Center'
@@ -138,6 +144,22 @@ class MeetingPoint(models.Model):
     class Meta:
         managed = False
         db_table = 'MeetingPoint'
+
+
+class MeetingProposal(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    chat_room = models.ForeignKey(ChatRoom, on_delete=models.DO_NOTHING, db_column='chatRoomId', related_name='meeting_proposals')
+    proposer = models.ForeignKey(User, on_delete=models.DO_NOTHING, db_column='proposerId', related_name='meeting_proposals')
+    meeting_point = models.ForeignKey(MeetingPoint, on_delete=models.DO_NOTHING, db_column='meetingPointId', related_name='meeting_proposals')
+    starts_at = models.DateTimeField(db_column='startsAt')
+    ends_at = models.DateTimeField(db_column='endsAt')
+    status = models.CharField(max_length=20, choices=MeetingProposalStatus.choices, default=MeetingProposalStatus.PENDING)
+    responded_at = models.DateTimeField(db_column='respondedAt', null=True, blank=True)
+    created_at = models.DateTimeField(db_column='createdAt')
+
+    class Meta:
+        managed = False
+        db_table = 'MeetingProposal'
 
 
 class Exchange(models.Model):

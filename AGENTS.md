@@ -41,6 +41,7 @@ uv run python manage.py test
 | `/analytics/average-ticket/` | 15 | done (average ticket: `{globalAverage, byCondition}` in COP over completed exchanges, joined with `Material.condition`; dashboard page `/dash-board/bq15/`). It was first numbered 14, which collided with `review-sentiment` |
 | `/analytics/dead-listings/` (optional `?staleDays=`, `?sellerId=`) | 10 | done (survival curve, K-Means pattern clusters and seller risk alerts) |
 | `/analytics/failed-chat-words/` | 13 | done (word cloud of the last 10 messages of cancelled or abandoned chats, compared with chats that ended in a sale; words used in fewer than 2 chats are hidden) |
+| `/analytics/meetup-outcomes/` | 16 | done (agreed meetups, meaning `ACCEPTED` meeting proposals, whose time has passed, split into completed, cancelled and not closed by the exchange of the same chat, per meeting point and campus hour; upcoming meetups and the proposals declined or withdrawn before agreeing are counted apart; dashboard page `/dash-board/bq16/`) |
 | Firebase Crashlytics console | 1 | outside this service |
 
 `business_questions_feasibility.md` states what the data can and cannot answer. Also check `Business-Questions.md` to know what a business question actually is.
@@ -59,7 +60,7 @@ After any change to `../campus-swap-backend/prisma/schema.prisma`, update `analy
 
 - `Exchange.material` is a `OneToOneField`, but a material can now have several exchanges, so it should be a `ForeignKey` (the `Material.exchange` reverse accessor, used by BQ6, would then become a different one).
 - `Exchange` is missing `orderNumber`, `createdAt`, `receivedCondition`, `meetingStartsAt`, `meetingEndsAt`; `Message` is missing `meetingProposalId`. (`Exchange.cancelledAt` and `Message.type` were added for BQ13.)
-- No models yet for `Rating`, `MeetingProposal` or `ScheduleBlock`; `NotificationType` lacks `ORDER_PLACED`.
+- No model yet for `ScheduleBlock`; `NotificationType` lacks `ORDER_PLACED`.
 - `AnalyticsEventType.MEETING_CONFIRMED` exists here but not in the Prisma enum; BQ4 already tolerates its absence and falls back to completed exchanges with a meeting point.
 
 Views already guard against a missing column or enum value with `try/except ProgrammingError` / `DataError`. Keep that behaviour for columns that a not-yet-applied migration might lack, but do not rely on it as a substitute for syncing the models.
@@ -68,4 +69,4 @@ Views already guard against a missing column or enum value with `try/except Prog
 
 - The analytics endpoints have no authentication. Anyone who can reach the service can read the aggregates. Decide whether to add a shared key or session before the dashboard is deployed publicly.
 - Nothing in the code uses a read-only database role (see the design decisions above).
-- The dashboard covers every implemented question (2 to 15). `/analytics/chat-agreement/<chatRoomId>/` has no dashboard page: it is one chat, used by the mobile app only. The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.
+- The dashboard covers every implemented question (2 to 16). `/analytics/chat-agreement/<chatRoomId>/` has no dashboard page: it is one chat, used by the mobile app only. The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.
