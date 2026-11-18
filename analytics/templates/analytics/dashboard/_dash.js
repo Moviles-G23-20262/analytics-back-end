@@ -252,6 +252,15 @@ const HEADLINES = {
     if (!o.agreed) return o.upcoming ? `${plural(o.upcoming, 'meetup')} agreed in the chat, none has happened yet.` : 'No meetup has been agreed in the chat yet.';
     return `${strong(fmtPct(o.completion_rate * 100))} of the meetups agreed in the chat end in a completed exchange (${nf.format(o.completed)} of ${nf.format(o.agreed)}), and ${strong(fmtPct(o.agreed_first_try_share * 100))} are agreed at the first proposal.`;
   },
+  17(d) {
+    if (!d.listings_total) return 'No listing has been published yet.';
+    const withData = d.by_stars.filter(r => r.listings > 0);
+    const top = withData.reduce((a, b) => (b.sale_rate > a.sale_rate ? b : a), withData[0]);
+    const fresh = d.by_stars.find(r => r.group === 'no_reviews');
+    let text = `Listings from sellers with ${strong(top.label.toLowerCase())} sell the most: ${strong(fmtPct(top.sale_rate * 100))} of them sold`;
+    if (fresh && fresh.listings && fresh.group !== top.group) text += `, against ${strong(fmtPct(fresh.sale_rate * 100))} for new sellers without reviews`;
+    return text + '.';
+  },
 };
 
 // Fetch the page's endpoint, render, and re-render when the OS theme changes. Resolves to a redraw function.

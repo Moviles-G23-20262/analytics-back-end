@@ -1,0 +1,107 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ17 · Seller reputation{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">By the seller's average stars</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Buyers interested and listings sold</h2>
+    <p class="sub">Share of listings that got at least one buyer in the chat, and share that sold.</p>
+    <div class="chart-box"><canvas id="c-stars-rates" role="img" aria-label="Contact rate and sale rate of listings by the seller's average stars"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Days to sell</h2>
+    <p class="sub">Median days from publishing to the completed exchange.</p>
+    <div class="chart-box"><canvas id="c-stars-days" role="img" aria-label="Median days to sell by the seller's average stars"></canvas></div>
+  </section>
+</div>
+<section class="card" style="margin-top:16px"><h2>Detail by stars</h2><div class="table-wrap"><table id="t-stars"></table></div></section>
+
+<h2 class="section-title">By how many reviews the seller has</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Buyers interested and listings sold</h2>
+    <p class="sub">Does a longer track record build more trust than a high score with few reviews?</p>
+    <div class="chart-box"><canvas id="c-reviews-rates" role="img" aria-label="Contact rate and sale rate of listings by the seller's number of reviews"></canvas></div>
+  </section>
+  <section class="card"><h2>Detail by number of reviews</h2><div class="table-wrap"><table id="t-reviews"></table></div></section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>Every listing is placed in the group of its <strong>seller's average stars</strong> (from all the ratings the seller received) and, apart, in the group of <strong>how many reviews</strong> the seller has.</li>
+    <li>A listing is <strong>contacted</strong> when at least one buyer opened a chat about it. <strong>Buyers per listing</strong> counts distinct buyers.</li>
+    <li>A listing is <strong>sold</strong> when its exchange was completed or its status is <code>SOLD</code>. <strong>Days to sell</strong> goes from publishing to the completed exchange.</li>
+    <li>The grouping uses the seller's reputation <strong>today</strong>, not the one they had when the listing was published, and a small group can swing a lot: treat the result as indicative until each group has enough listings.</li>
+  </ul>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const rate = v => fmtPct(v * 100);
+
+function render(d) {
+  setAnswer(HEADLINES[17](d));
+  const stars = d.by_stars, reviews = d.by_review_count;
+  const all = rows => rows.reduce((s, r) => ({ listings: s.listings + r.listings, sold: s.sold + r.sold, contacted: s.contacted + r.contacted }), { listings: 0, sold: 0, contacted: 0 });
+  const overall = all(stars);
+
+  tiles('tiles', [
+    { label: 'Listings', value: nf.format(d.listings_total) },
+    { label: 'Sellers with reviews', value: nf.format(d.sellers_with_reviews) },
+    { label: 'Listings contacted', value: rate(overall.listings ? overall.contacted / overall.listings : 0), hint: nf.format(overall.contacted) + ' listings' },
+    { label: 'Listings sold', value: rate(overall.listings ? overall.sold / overall.listings : 0), hint: nf.format(overall.sold) + ' listings' },
+  ]);
+
+  const pctAxis = axes({ y: { max: 100, ticks: { callback: v => v + '%' } } });
+  const ratesChart = (id, rows) => draw(id, {
+    type: 'bar',
+    data: {
+      labels: rows.map(r => r.label),
+      datasets: [
+        bar('Contacted', rows.map(r => r.contact_rate * 100), 1),
+        bar('Sold', rows.map(r => r.sale_rate * 100), 3),
+      ],
+    },
+    options: baseOptions({ scales: pctAxis }),
+  });
+  ratesChart('c-stars-rates', stars);
+  ratesChart('c-reviews-rates', reviews);
+
+  draw('c-stars-days', {
+    type: 'bar',
+    data: { labels: stars.map(r => r.label), datasets: [bar('Median days to sell', stars.map(r => r.median_days_to_sell ?? 0), 2)] },
+    options: baseOptions({ legend: false }),
+  });
+
+  const detail = rows => rows.map(r => [
+    r.label, nf.format(r.sellers), nf.format(r.listings), rate(r.contact_rate), nf.format(r.buyers_per_listing),
+    rate(r.sale_rate), r.median_days_to_sell === null ? '–' : nf.format(r.median_days_to_sell),
+  ]);
+  const headers = ['Group', 'Sellers', 'Listings', 'Contacted', 'Buyers per listing', 'Sold', 'Median days to sell'];
+  table('t-stars', headers, detail(stars));
+  table('t-reviews', headers, detail(reviews));
+
+  const withData = rows => rows.filter(r => r.listings > 0);
+  const best = rows => withData(rows).reduce((a, b) => (b.sale_rate > a.sale_rate ? b : a), withData(rows)[0]);
+  const list = [];
+  const topStars = best(stars), topReviews = best(reviews);
+  if (topStars) list.push(`Listings from sellers with ${strong(topStars.label.toLowerCase())} sell the most (${strong(rate(topStars.sale_rate))} of ${plural(topStars.listings, 'listing')}).`);
+  if (topReviews) list.push(`By track record, sellers with ${strong(topReviews.label.toLowerCase())} have the highest sale rate (${rate(topReviews.sale_rate)}).`);
+  const fresh = stars.find(r => r.group === 'no_reviews');
+  if (fresh && fresh.listings) list.push(`New sellers without reviews: ${strong(rate(fresh.contact_rate))} of their listings get a buyer in the chat and ${strong(rate(fresh.sale_rate))} sell.`);
+  const small = withData(stars).filter(r => r.listings < 10).map(r => r.label.toLowerCase());
+  if (small.length) list.push(`Small groups (${small.join(', ')}) have fewer than 10 listings: treat them as indicative.`);
+  insights('insights', list);
+}
+start(render);
+</script>
+{% endblock %}
