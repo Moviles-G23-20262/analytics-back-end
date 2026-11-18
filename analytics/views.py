@@ -24,6 +24,7 @@ from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, Exch
 from .models import ChatRoom, Message, MaterialCategory, MaterialCondition, MaterialStatus, MessageType
 from .models import Rating
 from .models import MeetingPoint, MeetingProposal, MeetingProposalStatus
+from .seller_reputation import summarize_seller_reputation 
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
 
@@ -1920,6 +1921,17 @@ def meetup_outcomes(request):
     summary = summarize_meetup_outcomes(proposals, chat_rooms, exchanges, points, timezone.now())
     return JsonResponse({'time_zone': CAMPUS_TIME_ZONE, 'available': True, **summary})
 
+#BQ 17 Does a seller's reputation (average stars and number of reviews) change how many buyers contact their
+def seller_reputation(request):
+    listings = Material.objects.values('id', 'seller_id', 'status', 'created_at')
+    completed_at = dict(
+        Exchange.objects.filter(status=ExchangeStatus.COMPLETED, completed_at__isnull=False)
+        .values_list('material_id', 'completed_at')
+    )
+    ratings = Rating.objects.values('rated_id', 'stars')
+    contacts = ChatRoom.objects.values('material_id', 'buyer_id')
+    return JsonResponse(summarize_seller_reputation(listings, completed_at, ratings, contacts))
+
 
 # Dashboard
 # One entry per implemented business question; the sidebar, the overview and each question page read from here.
@@ -2013,6 +2025,12 @@ DASHBOARD_QUESTIONS = [
         'title': 'Meetups that happen',
         'question': 'What share of the meetups agreed in the chat end in a completed exchange, and how often is a meetup changed or dropped, by meeting point and hour of the day?',
         'endpoint': 'meetup-outcomes',
+    },
+    {
+        'number': 17,
+        'title': 'Seller reputation',
+        'question': 'Do listings from sellers with better ratings and more reviews get more buyers interested and sell faster than those from new or low-rated sellers?',
+        'endpoint': 'seller-reputation',
     },
 ]
 

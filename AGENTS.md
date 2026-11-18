@@ -42,6 +42,7 @@ uv run python manage.py test
 | `/analytics/dead-listings/` (optional `?staleDays=`, `?sellerId=`) | 10 | done (survival curve, K-Means pattern clusters and seller risk alerts) |
 | `/analytics/failed-chat-words/` | 13 | done (word cloud of the last 10 messages of cancelled or abandoned chats, compared with chats that ended in a sale; words used in fewer than 2 chats are hidden) |
 | `/analytics/meetup-outcomes/` | 16 | done (agreed meetups, meaning `ACCEPTED` meeting proposals, whose time has passed, split into completed, cancelled and not closed by the exchange of the same chat, per meeting point and campus hour; upcoming meetups and the proposals declined or withdrawn before agreeing are counted apart; dashboard page `/dash-board/bq16/`) |
+| `/analytics/seller-reputation/` | 17 | done (listings grouped by the seller's average stars and, apart, by how many reviews the seller has; per group: contact rate, buyers per listing, sale rate and median days to sell; dashboard page `/dash-board/bq17/`; the calculation lives in `analytics/seller_reputation.py`) |
 | Firebase Crashlytics console | 1 | outside this service |
 
 `business_questions_feasibility.md` states what the data can and cannot answer. Also check `Business-Questions.md` to know what a business question actually is.
