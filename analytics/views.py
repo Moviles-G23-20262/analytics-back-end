@@ -10,6 +10,7 @@ from django.http import Http404
 from django.shortcuts import render
 from django.urls import reverse
 from django.utils import timezone
+from django.views.decorators.cache import never_cache
 
 from django.http import JsonResponse
 import logging
@@ -1363,6 +1364,8 @@ def summarize_average_ticket(groups):
     return {
         'globalAverage': _pesos(total, sales),
         'byCondition': dict(sorted(by_condition.items(), key=lambda kv: order.get(kv[0], len(order)))),
+        #cuantas ventas completadas hay detras del promedio: cada venta nueva cambia este numero
+        'completedSales': sales,
     }
 
 def completed_sales_by_condition():
@@ -1374,8 +1377,12 @@ def completed_sales_by_condition():
         .order_by()
     )
 
+@never_cache
 def average_ticket(request):
-    return JsonResponse(summarize_average_ticket(list(completed_sales_by_condition())))
+    #never_cache: el promedio sale de la BD en cada llamada; ni el navegador ni un CDN deben servir uno viejo
+    data = summarize_average_ticket(list(completed_sales_by_condition()))
+    data['generatedAt'] = timezone.now().isoformat()
+    return JsonResponse(data)
 
 
 def calculate_time_to_sold_metrics(sales_records):

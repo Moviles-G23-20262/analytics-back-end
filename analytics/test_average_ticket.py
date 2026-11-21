@@ -14,7 +14,7 @@ def group(condition, total, sales):
 class SummarizeAverageTicketTestCase(SimpleTestCase):
 
     def test_no_completed_sales(self):
-        self.assertEqual(summarize_average_ticket([]), {'globalAverage': None, 'byCondition': {}})
+        self.assertEqual(summarize_average_ticket([]), {'globalAverage': None, 'byCondition': {}, 'completedSales': 0})
 
     def test_global_and_per_condition_averages(self):
         result = summarize_average_ticket([
@@ -22,7 +22,7 @@ class SummarizeAverageTicketTestCase(SimpleTestCase):
             group('GOOD', '90000', 3),   # 30 000 each
         ])
 
-        self.assertEqual(result, {'globalAverage': 42000, 'byCondition': {'NEW': 60000, 'GOOD': 30000}})
+        self.assertEqual(result, {'globalAverage': 42000, 'byCondition': {'NEW': 60000, 'GOOD': 30000}, 'completedSales': 5})
 
     def test_global_average_is_weighted_by_sales_not_by_condition(self):
         result = summarize_average_ticket([group('NEW', '100000', 1), group('FAIR', '90000', 9)])
