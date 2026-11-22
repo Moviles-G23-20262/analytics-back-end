@@ -502,20 +502,40 @@ def _relative_by(groups, key):
             relative.setdefault(l.get(key), []).append(l['price'] / median)
     return relative
 
+def _price_range(listings):
+    prices = sorted(l['price'] for l in listings)
+    median = _percentile(prices, 0.5)
+    return {
+        'listings': len(prices),
+        'min': round(prices[0], 2),
+        'median': round(median, 2),
+        'max': round(prices[-1], 2),
+        'spread_pct': round((prices[-1] - prices[0]) / median * 100, 2) if median and len(prices) > 1 else 0.0,
+    }
+
 def summarize_price_variation(listings):
     groups = {}
+    categories = {}
     total = 0
     for listing in listings:
         price = float(listing['price'] or 0)
         if price <= 0:
             continue
         total += 1
+        priced = {**listing, 'price': price}
+        categories.setdefault(listing['category'], []).append(priced)
         key = item_key(listing)
         if key is not None:
-            groups.setdefault(key, []).append({**listing, 'price': price})
+            groups.setdefault(key, []).append(priced)
 
     #solo se comparan items publicados al menos dos veces
     comparable = [g for g in groups.values() if len(g) >= 2]
+    #sin items repetidos todavia, condicion y facultad se comparan contra la mediana de la categoria
+    #para que la pregunta tenga respuesta desde el principio; 'relative_to' dice cual se uso
+    relative_to = 'item' if comparable else 'category'
+    baseline_groups = comparable or [g for g in categories.values() if len(g) >= 2]
+    by_category = [{'category': c, **_price_range(g)} for c, g in categories.items()]
+    by_category.sort(key=lambda r: (-r['listings'], r['category']))
 
     items = []
     for g in comparable:
@@ -546,12 +566,12 @@ def summarize_price_variation(listings):
     condition_order = {c: i for i, c in enumerate(MaterialCondition.values)}
     by_condition = [
         {'condition': c or 'UNKNOWN', 'listings': len(v), 'median_relative_price': round(_median(v), 4)}
-        for c, v in _relative_by(comparable, 'condition').items()
+        for c, v in _relative_by(baseline_groups, 'condition').items()
     ]
     by_condition.sort(key=lambda r: condition_order.get(r['condition'], len(condition_order)))
     by_faculty = [
         {'faculty': f or 'Unknown', 'listings': len(v), 'median_relative_price': round(_median(v), 4)}
-        for f, v in _relative_by(comparable, 'faculty').items()
+        for f, v in _relative_by(baseline_groups, 'faculty').items()
     ]
     by_faculty.sort(key=lambda r: (-r['listings'], r['faculty']))
 
@@ -561,6 +581,8 @@ def summarize_price_variation(listings):
         'listings_compared': sum(len(g) for g in comparable),
         'median_spread_pct': round(_median([i['spread_pct'] for i in items]), 2),
         'items': items[:MAX_ITEMS_LISTED],
+        'by_category': by_category,
+        'relative_to': relative_to,
         'by_condition': by_condition,
         'by_faculty': by_faculty,
     }

@@ -78,3 +78,33 @@ class SummarizePriceVariationTestCase(SimpleTestCase):
         self.assertEqual([r['condition'] for r in result['by_condition']], ['NEW', 'FAIR'])
         by_faculty = {r['faculty']: r['median_relative_price'] for r in result['by_faculty']}
         self.assertEqual(by_faculty, {'Engineering': 1.3333, 'Unknown': 0.6667})
+
+
+class PriceVariationWithoutRepeatedItemsTestCase(SimpleTestCase):
+    """Before any item is listed twice the page still needs something to chart: the category ranges."""
+
+    def test_every_category_gets_its_price_range(self):
+        result = summarize_price_variation([
+            listing('Stewart', 80), listing('Apostol', 120, edition='2nd'), listing('Larson', 100, edition='10th'),
+            listing('Casio', 64000, category='CALCULATORS', edition=None, model_name='fx-991'),
+        ])
+
+        self.assertEqual(result['items_compared'], 0)
+        books, calculators = result['by_category']
+        self.assertEqual(books, {'category': 'BOOKS', 'listings': 3, 'min': 80.0, 'median': 100.0, 'max': 120.0, 'spread_pct': 40.0})
+        self.assertEqual(calculators['spread_pct'], 0.0)
+
+    def test_condition_is_compared_against_the_category_until_items_repeat(self):
+        result = summarize_price_variation([
+            listing('Stewart', 150, condition='NEW'), listing('Apostol', 50, condition='FAIR', edition='2nd'),
+        ])
+
+        self.assertEqual(result['relative_to'], 'category')
+        by_condition = {r['condition']: r['median_relative_price'] for r in result['by_condition']}
+        self.assertEqual(by_condition, {'NEW': 1.5, 'FAIR': 0.5})
+
+    def test_repeated_items_take_over_as_the_baseline(self):
+        result = summarize_price_variation([listing('Stewart', 80), listing('Stewart', 120), listing('Apostol', 500, edition='2nd')])
+
+        self.assertEqual(result['relative_to'], 'item')
+        self.assertEqual(result['by_condition'][0]['listings'], 2)
