@@ -65,7 +65,10 @@ SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
 # CORS: the API is read-only, so cross-origin GETs from the web dashboard are allowed.
 # Any origin in development (DEBUG); in production only the origins listed here.
 CORS_ALLOW_ALL_ORIGINS = DEBUG
-CORS_ALLOWED_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173']
+# DASHBOARD_ORIGINS (comma separated) adds the deployed dashboard, e.g. https://my-dashboard.vercel.app.
+CORS_ALLOWED_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'] + [
+    origin.strip().rstrip('/') for origin in os.getenv('DASHBOARD_ORIGINS', '').split(',') if origin.strip()
+]
 
 ROOT_URLCONF = 'config.urls'
 
