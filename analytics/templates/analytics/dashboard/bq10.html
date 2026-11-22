@@ -73,10 +73,7 @@
 {% block scripts %}
 <script>
 const pct = v => +(v * 100).toFixed(1);
-let latestData = null;
-
 function render(d) {
-  latestData = d;
   setAnswer(HEADLINES[10](d));
   const s = d.summary;
   const cmp = d.comparisons;
@@ -279,25 +276,16 @@ function render(d) {
   );
 }
 
-async function fetchWithThreshold(days) {
-  setStatus(`Loading with ${days}-day threshold…`);
-  try {
-    const response = await fetch(`${ENDPOINT}?staleDays=${encodeURIComponent(days)}`);
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    const data = await response.json();
-    setStatus('');
-    themeDefaults();
-    render(data);
-  } catch (error) {
-    setStatus('Could not reload (' + error.message + ').', true);
-  }
-}
+// The chosen threshold is part of every request, including the automatic refreshes.
+let staleDays = 14;
 
 document.querySelectorAll('[data-stale]').forEach(btn => btn.addEventListener('click', () => {
   document.querySelectorAll('[data-stale]').forEach(b => b.setAttribute('aria-pressed', b === btn));
-  fetchWithThreshold(btn.dataset.stale);
+  staleDays = Number(btn.dataset.stale);
+  setStatus(`Loading with ${staleDays}-day threshold…`);
+  refreshNow();
 }));
 
-start(initialData => render(latestData || initialData));
+start(render, { url: () => `${ENDPOINT}?staleDays=${encodeURIComponent(staleDays)}` });
 </script>
 {% endblock %}

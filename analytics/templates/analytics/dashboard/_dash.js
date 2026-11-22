@@ -197,7 +197,11 @@ const HEADLINES = {
   },
   9(d) {
     if (!d.listings) return 'No priced listings yet.';
-    if (!d.items_compared) return `${plural(d.listings, 'listing')}, but no item has been listed more than once yet.`;
+    if (!d.items_compared) {
+      const wide = (d.by_category || []).filter(r => r.listings >= 2).sort((a, b) => b.spread_pct - a.spread_pct)[0];
+      const text = `${plural(d.listings, 'listing')}, but no item has been listed more than once yet`;
+      return wide ? `${text}. Within ${strong(prettify(wide.category))}, asking prices go from $${nf.format(wide.min)} to $${nf.format(wide.max)}.` : text + '.';
+    }
     return `The same item is listed with a median spread of ${strong(fmtPct(d.median_spread_pct))} between its cheapest and most expensive listing, across ${plural(d.items_compared, 'item')} listed more than once.`;
   },
   10(d) {
@@ -263,21 +267,55 @@ const HEADLINES = {
   },
 };
 
-// Fetch the page's endpoint, render, and re-render when the OS theme changes. Resolves to a redraw function.
-async function start(render) {
-  let data;
-  try {
-    const response = await fetch(ENDPOINT);
-    if (!response.ok) throw new Error('HTTP ' + response.status);
-    data = await response.json();
-  } catch (error) {
-    setStatus('Could not load this question (' + error.message + ').', true);
-    setAnswer('The data for this question could not be loaded.');
-    return () => {};
+// Live data: every page asks its endpoint again every REFRESH_MS while the tab is visible, and right away
+// when the tab comes back, so the charts follow the database without reloading the page.
+const REFRESH_MS = 30000;
+const clock = new Intl.DateTimeFormat('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+function livePoll(load) {
+  setInterval(() => { if (!document.hidden) load(); }, REFRESH_MS);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
+}
+
+// Asks the page's endpoint again now (BQ10 calls it after changing its threshold).
+let refreshNow = () => Promise.resolve();
+
+// Fetch the page's endpoint, render, keep it live and re-render when the OS theme changes.
+// `url` builds the request, for pages with their own parameters. Resolves to a redraw function.
+async function start(render, { url = () => ENDPOINT } = {}) {
+  let data = null, lastText = null, updatedAt = null, inFlight = null, again = false;
+  const redraw = () => { if (data === null) return; themeDefaults(); render(data); };
+
+  async function load() {
+    try {
+      const response = await fetch(url(), { cache: 'no-store' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const text = await response.text();
+      // Same answer as last time: nothing to redraw (charts would replay their animation for nothing).
+      if (text !== lastText) { data = JSON.parse(text); lastText = text; redraw(); }
+      updatedAt = new Date();
+      setStatus(`Live data · updated ${clock.format(updatedAt)} · refreshes every ${REFRESH_MS / 1000} s`);
+    } catch (error) {
+      if (data === null) {
+        setStatus(`Could not load this question (${error.message}). Retrying in ${REFRESH_MS / 1000} s.`, true);
+        setAnswer('The data for this question could not be loaded.');
+      } else {
+        setStatus(`Could not refresh (${error.message}); showing the data from ${clock.format(updatedAt)}. Retrying in ${REFRESH_MS / 1000} s.`, true);
+      }
+    }
   }
-  setStatus('');
-  const redraw = () => { themeDefaults(); render(data); };
-  redraw();
+  // One request at a time; a call while one is running asks once more when it ends (e.g. a new BQ10 threshold).
+  function loadOnce() {
+    if (inFlight) { again = true; return inFlight; }
+    inFlight = load().finally(() => {
+      inFlight = null;
+      if (again) { again = false; loadOnce(); }
+    });
+    return inFlight;
+  }
+
+  refreshNow = loadOnce;
+  await loadOnce();
+  livePoll(loadOnce);
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', redraw);
   return redraw;
 }
