@@ -9,17 +9,23 @@
 <section class="card">
   <h2>Price range of each item</h2>
   <p class="sub">Lowest, median and highest asking price of items listed more than once (up to 20, most listed first).</p>
-  <div class="chart-box tall"><canvas id="c-items" role="img" aria-label="Lowest, median and highest price per item"></canvas></div>
+  <p class="sub" id="items-empty" hidden>No item has been listed more than once yet, so there is no same-item comparison to draw. The ranges by category below cover every listing in the meantime.</p>
+  <div class="chart-box tall" id="items-box"><canvas id="c-items" role="img" aria-label="Lowest, median and highest price per item"></canvas></div>
+</section>
+<section class="card" style="margin-top:16px">
+  <h2>Price range by category</h2>
+  <p class="sub">Lowest, median and highest asking price of every priced listing in each category.</p>
+  <div class="chart-box"><canvas id="c-category" role="img" aria-label="Lowest, median and highest price per category"></canvas></div>
 </section>
 <div class="grid2" style="margin-top:16px">
   <section class="card">
     <h2>By condition</h2>
-    <p class="sub">Median price relative to the same item's median. 100% is the typical price; below means cheaper.</p>
+    <p class="sub" id="condition-sub">Median price relative to the same item's median. 100% is the typical price; below means cheaper.</p>
     <div class="chart-box"><canvas id="c-condition" role="img" aria-label="Relative price by item condition"></canvas></div>
   </section>
   <section class="card">
     <h2>By seller faculty</h2>
-    <p class="sub">Median price relative to the same item's median, by the faculty of the seller.</p>
+    <p class="sub" id="faculty-sub">Median price relative to the same item's median, by the faculty of the seller.</p>
     <div class="chart-box"><canvas id="c-faculty" role="img" aria-label="Relative price by seller faculty"></canvas></div>
   </section>
 </div>
@@ -33,7 +39,8 @@
     <li>Prices are the <strong>asking prices</strong> of every listing (<code>Material.price</code>), sold or not. Free listings are left out.</li>
     <li>Two listings are the <strong>same item</strong> when they share the category and the model (calculators, lab equipment), or, without a model, the title and the edition. Titles are compared ignoring case, accents and punctuation; different wordings of the same book are not matched.</li>
     <li>Only items listed at least twice are compared. The <strong>spread</strong> is (highest − lowest) / median.</li>
-    <li>To compare conditions and faculties across items with very different prices, each listing is divided by its item's median price, and the median of those ratios is shown.</li>
+    <li>To compare conditions and faculties across items with very different prices, each listing is divided by its item's median price, and the median of those ratios is shown. Until some item is listed twice, the category median is used instead, and the charts say so.</li>
+    <li>The page asks the endpoint again every 30 seconds, so new listings show up without reloading.</li>
     <li>Completed sale prices per category and condition, used by the price suggestion, are in <code>/analytics/price-stats/</code>.</li>
   </ul>
   <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
@@ -53,6 +60,31 @@ function render(d) {
     { label: 'Median price spread', value: d.items_compared ? fmtPct(d.median_spread_pct) : '–', hint: 'highest vs lowest, same item' },
     { label: 'Faculties compared', value: nf.format(d.by_faculty.length) },
   ]);
+
+  const byItem = d.relative_to !== 'category';
+  el('items-empty').hidden = items.length > 0;
+  el('items-box').hidden = items.length === 0;
+  const base = byItem ? "the same item's median" : "the median of its category (no item is listed twice yet)";
+  el('condition-sub').textContent = `Median price relative to ${base}. 100% is the typical price; below means cheaper.`;
+  el('faculty-sub').textContent = `Median price relative to ${base}, by the faculty of the seller.`;
+
+  const cats = d.by_category || [];
+  draw('c-category', {
+    type: 'bar',
+    data: {
+      labels: cats.map(r => prettify(r.category)),
+      datasets: [
+        bar('Lowest', cats.map(r => r.min), 1),
+        bar('Median', cats.map(r => r.median), 3),
+        bar('Highest', cats.map(r => r.max), 2),
+      ],
+    },
+    options: baseOptions({
+      horizontal: true,
+      plugins: { tooltip: { callbacks: { label: c => `${c.dataset.label}: $${nf.format(c.parsed.x)}`, afterBody: cs => { const r = cats[cs[0].dataIndex]; return `${plural(r.listings, 'listing')}, spread ${fmtPct(r.spread_pct)}`; } } } },
+      scales: axes({ horizontal: true, x: { ticks: { callback: v => '$' + nf.format(v) } } }),
+    }),
+  });
 
   draw('c-items', {
     type: 'bar',
@@ -85,7 +117,14 @@ function render(d) {
 
   const list = [];
   if (!d.items_compared) {
-    list.push('No item has been listed more than once yet, so there is nothing to compare.');
+    list.push('No item has been listed more than once yet, so prices of the same item cannot be compared.');
+    const wide = cats.filter(r => r.listings >= 2).sort((a, b) => b.spread_pct - a.spread_pct)[0];
+    if (wide) list.push(`Within a category, ${strong(prettify(wide.category))} varies the most: from $${nf.format(wide.min)} to $${nf.format(wide.max)} across ${plural(wide.listings, 'listing')}.`);
+    const conds = d.by_condition.filter(r => r.condition !== 'UNKNOWN');
+    if (conds.length >= 2) {
+      const hi = conds[0], lo = conds[conds.length - 1];
+      list.push(`Against their category, ${strong(prettify(hi.condition))} items are listed at ${fmtPct(pctOf(hi.median_relative_price))} of the typical price and ${strong(prettify(lo.condition))} at ${fmtPct(pctOf(lo.median_relative_price))}.`);
+    }
   } else {
     const widest = [...items].sort((a, b) => b.spread_pct - a.spread_pct)[0];
     list.push(`${strong(widest.item)} has the widest range: from $${nf.format(widest.min)} to $${nf.format(widest.max)} (${fmtPct(widest.spread_pct)} of its median) across ${plural(widest.sellers, 'seller')}.`);
