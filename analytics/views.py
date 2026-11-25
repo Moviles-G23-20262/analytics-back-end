@@ -273,8 +273,10 @@ def map_events_to_chat_rooms(events):
         if not room_id:
             continue
         room_id = str(room_id)
-        if room_id not in agreed or event['occurred_at'] < agreed[room_id]:
-            agreed[room_id] = event['occurred_at']
+        moment = event.get('client_created_at') or event['occurred_at']
+        if room_id not in agreed or moment < agreed[room_id]:
+            agreed[room_id] = moment
+
     return agreed
 
 def calculate_chat_to_meeting_metrics(chat_room_ids, messages, agreed_at_by_room):
@@ -333,7 +335,11 @@ def chat_to_meeting_point(request):
     messages = Message.objects.values('chat_room_id', 'created_at')
 
     try:
-        exchanges = Exchange.objects.filter(meeting_point__isnull=False).values(
+        exchanges = Exchange.objects.filter(
+            status=ExchangeStatus.COMPLETED,
+            completed_at__isnull=False,
+            meeting_point__isnull=False,
+        ).values(
             'material_id', 'buyer_id', 'seller_id', 'completed_at')
         from_exchanges = map_exchanges_to_chat_rooms(chat_rooms, exchanges)
     except ProgrammingError:
@@ -342,7 +348,7 @@ def chat_to_meeting_point(request):
 
     try:
         events = AnalyticsEvent.objects.filter(
-            event_type=AnalyticsEventType.MEETING_CONFIRMED).values('metadata', 'occurred_at')
+            event_type=AnalyticsEventType.MEETING_CONFIRMED).values('metadata', 'occurred_at', 'client_created_at')
         from_events = map_events_to_chat_rooms(events)
     except (DataError, ProgrammingError):
         logger.warning('MEETING_CONFIRMED is not in the AnalyticsEventType enum yet; using exchanges only')
