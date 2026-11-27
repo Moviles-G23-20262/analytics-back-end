@@ -41,7 +41,8 @@ def api_root(request):
             "failed_chat_words": "/analytics/failed-chat-words/",
             "meetup_outcomes": "/analytics/meetup-outcomes/",
             "price_stats": "/analytics/price-stats/?category=BOOKS&condition=GOOD",
-            "seller_reputation": "/analytics/seller-reputation/"
+            "seller_reputation": "/analytics/seller-reputation/",
+            "major_activity": "/analytics/major-activity/"
         }
     })
 

@@ -1,0 +1,128 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ18 · Major & faculty activity{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">By academic major</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Listings, inquiries and completed exchanges</h2>
+    <p class="sub">Top 10 university majors ranked by completed exchanges and active listings.</p>
+    <div class="chart-box tall"><canvas id="c-majors" role="img" aria-label="Listings, buyer inquiries, and completed exchanges by academic major"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>By faculty</h2>
+    <p class="sub">Aggregated marketplace supply, buyer demand, and conversion across faculties.</p>
+    <div class="chart-box tall"><canvas id="c-faculties" role="img" aria-label="Listings, buyer inquiries, and completed exchanges by faculty"></canvas></div>
+  </section>
+</div>
+
+<section class="card" style="margin-top:16px">
+  <h2>Detail by major</h2>
+  <div class="table-wrap"><table id="t-majors"></table></div>
+</section>
+
+<section class="card" style="margin-top:16px">
+  <h2>Detail by faculty</h2>
+  <div class="table-wrap"><table id="t-faculties"></table></div>
+</section>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>Each registered student belongs to their declared <strong>major</strong> and <strong>faculty</strong> (case-insensitive normalized; missing values appear as <code>Unspecified</code>).</li>
+    <li><strong>Listings</strong> count published materials by the seller's major/faculty; <strong>Buyer inquiries</strong> count chat rooms opened on those listings.</li>
+    <li><strong>Completed exchanges</strong> count listings with a <code>COMPLETED</code> exchange record or <code>SOLD</code> status, and <strong>Conversion rate</strong> is completed exchanges divided by listings.</li>
+  </ul>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const rate = v => fmtPct(v * 100);
+
+function render(d) {
+  setAnswer(HEADLINES[18](d));
+  const majors = d.by_major || [];
+  const faculties = d.by_faculty || [];
+  const overallConv = d.listings_total ? d.completed_exchanges_total / d.listings_total : 0;
+
+  tiles('tiles', [
+    { label: 'Active majors', value: nf.format(d.majors_active), hint: nf.format(d.users_total) + ' registered users' },
+    { label: 'Listings', value: nf.format(d.listings_total), hint: nf.format(d.faculties_active) + ' active faculties' },
+    { label: 'Buyer inquiries', value: nf.format(d.inquiries_total) },
+    { label: 'Completed exchanges', value: nf.format(d.completed_exchanges_total), hint: rate(overallConv) + ' conversion' },
+  ]);
+
+  const topMajors = majors.slice(0, 10);
+  draw('c-majors', {
+    type: 'bar',
+    data: {
+      labels: topMajors.map(r => r.name),
+      datasets: [
+        bar('Listings', topMajors.map(r => r.listings), 1),
+        bar('Buyer inquiries', topMajors.map(r => r.buyer_inquiries), 2),
+        bar('Completed exchanges', topMajors.map(r => r.completed_exchanges), 3),
+      ],
+    },
+    options: baseOptions({ indexAxis: 'y' }),
+  });
+
+  draw('c-faculties', {
+    type: 'bar',
+    data: {
+      labels: faculties.map(r => r.name),
+      datasets: [
+        bar('Listings', faculties.map(r => r.listings), 1),
+        bar('Buyer inquiries', faculties.map(r => r.buyer_inquiries), 2),
+        bar('Completed exchanges', faculties.map(r => r.completed_exchanges), 3),
+      ],
+    },
+    options: baseOptions({ indexAxis: 'y' }),
+  });
+
+  table(
+    't-majors',
+    ['Major', 'Faculty', 'Users', 'Active sellers', 'Listings', 'Inquiries', 'Sold', 'Conversion'],
+    majors.map(r => [
+      r.name, r.faculty, nf.format(r.users), nf.format(r.active_sellers),
+      nf.format(r.listings), nf.format(r.buyer_inquiries), nf.format(r.completed_exchanges), rate(r.conversion_rate),
+    ]),
+  );
+
+  table(
+    't-faculties',
+    ['Faculty', 'Users', 'Active sellers', 'Listings', 'Inquiries', 'Sold', 'Conversion'],
+    faculties.map(r => [
+      r.name, nf.format(r.users), nf.format(r.active_sellers),
+      nf.format(r.listings), nf.format(r.buyer_inquiries), nf.format(r.completed_exchanges), rate(r.conversion_rate),
+    ]),
+  );
+
+  const list = [];
+  if (majors.length) {
+    const top = majors[0];
+    list.push(`${strong(top.name)} leads campus activity with ${strong(plural(top.listings, 'listing'))}, ${plural(top.buyer_inquiries, 'buyer inquiry')} and ${strong(plural(top.completed_exchanges, 'completed exchange'))}.`);
+  }
+  const byDemand = [...majors].sort((a, b) => b.buyer_inquiries - a.buyer_inquiries)[0];
+  if (byDemand && byDemand.buyer_inquiries > 0 && (!majors.length || byDemand.name !== majors[0].name)) {
+    list.push(`Highest buyer demand is in ${strong(byDemand.name)} (${plural(byDemand.buyer_inquiries, 'chat inquiry')}).`);
+  }
+  if (faculties.length) {
+    const topFac = faculties[0];
+    list.push(`${strong(topFac.name)} is the most active faculty (${rate(topFac.conversion_rate)} listing-to-sale conversion).`);
+  }
+  const lowAdoption = majors.filter(r => r.users > 0 && r.listings === 0).length;
+  if (lowAdoption) {
+    list.push(`${plural(lowAdoption, 'major')} have registered students but no listings yet — a clear target for campus outreach.`);
+  }
+  insights('insights', list);
+}
+start(render);
+</script>
+{% endblock %}
