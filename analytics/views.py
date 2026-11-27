@@ -25,7 +25,9 @@ from .models import Material, AnalyticsEvent, AnalyticsEventType, Exchange, Exch
 from .models import ChatRoom, Message, MaterialCategory, MaterialCondition, MaterialStatus, MessageType
 from .models import Rating
 from .models import MeetingPoint, MeetingProposal, MeetingProposalStatus
-from .seller_reputation import summarize_seller_reputation 
+from .models import User
+from .seller_reputation import summarize_seller_reputation
+from .major_activity import summarize_major_activity
 
 CAMPUS_TIME_ZONE = 'America/Bogota'
 
@@ -1968,6 +1970,16 @@ def seller_reputation(request):
     return JsonResponse(summarize_seller_reputation(listings, completed_at, ratings, contacts))
 
 
+# BQ 18: Which university majors and faculties generate the most listings, buyer inquiries, and completed exchanges?
+@never_cache
+def major_activity(request):
+    users = User.objects.values('id', 'major', 'faculty')
+    listings = Material.objects.values('id', 'seller_id', 'status')
+    chat_rooms = ChatRoom.objects.values('id', 'material_id', 'buyer_id', 'seller_id')
+    exchanges = Exchange.objects.values('material_id', 'buyer_id', 'seller_id', 'status')
+    return JsonResponse(summarize_major_activity(users, listings, chat_rooms, exchanges))
+
+
 # Dashboard
 # One entry per implemented business question; the sidebar, the overview and each question page read from here.
 DASHBOARD_QUESTIONS = [
@@ -2066,6 +2078,11 @@ DASHBOARD_QUESTIONS = [
         'title': 'Seller reputation',
         'question': 'Do listings from sellers with better ratings and more reviews get more buyers interested and sell faster than those from new or low-rated sellers?',
         'endpoint': 'seller-reputation',
+    },    {
+        'number': 18,
+        'title': 'Major & faculty activity',
+        'question': 'Which university majors and faculties generate the most listings, buyer inquiries, and completed exchanges?',
+        'endpoint': 'major-activity',
     },
 ]
 
