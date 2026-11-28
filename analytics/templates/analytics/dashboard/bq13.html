@@ -27,6 +27,7 @@
     <h2>Most repeated phrases</h2>
     <p class="sub">Two words written one after the other, counted over all the chats that fell through.</p>
     <div class="chart-box tall"><canvas id="c-phrases" role="img" aria-label="Most repeated two-word phrases"></canvas></div>
+    <p class="sub" id="phrases-empty" hidden></p>
   </section>
   <section class="card">
     <h2>Failed vs. completed chats</h2>
@@ -74,6 +75,9 @@ function render(d) {
   }
 
   const phrases = d.phrases.slice(0, 10);
+  el('c-phrases').parentElement.hidden = !phrases.length;
+  el('phrases-empty').hidden = phrases.length > 0;
+  el('phrases-empty').textContent = `No two-word phrase repeats in ${d.min_conversations} or more failed chats yet.`;
   draw('c-phrases', {
     type: 'bar',
     data: { labels: phrases.map(p => p.phrase), datasets: [bar('Times written', phrases.map(p => p.count), 1)] },
