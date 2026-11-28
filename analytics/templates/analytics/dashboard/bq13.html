@@ -27,6 +27,7 @@
     <h2>Most repeated phrases</h2>
     <p class="sub">Two words written one after the other, counted over all the chats that fell through.</p>
     <div class="chart-box tall"><canvas id="c-phrases" role="img" aria-label="Most repeated two-word phrases"></canvas></div>
+    <p class="sub" id="phrases-empty" hidden></p>
   </section>
   <section class="card">
     <h2>Failed vs. completed chats</h2>
@@ -55,9 +56,9 @@ function render(d) {
   const failed = d.chats.cancelled + d.chats.abandoned;
 
   tiles('tiles', [
-    { label: 'Chats that fell through', value: nf.format(d.conversations_analyzed), hint: `${nf.format(d.chats.cancelled)} cancelled · ${nf.format(d.chats.abandoned)} abandoned` },
+    { label: 'Chats that fell through', value: nf.format(failed), hint: `${nf.format(d.chats.cancelled)} cancelled · ${nf.format(d.chats.abandoned)} abandoned · ${nf.format(d.conversations_analyzed)} with messages to read` },
     { label: 'Messages read', value: nf.format(d.messages_analyzed), hint: `last ${d.last_messages} of each chat` },
-    { label: 'Chats that ended in a sale', value: nf.format(d.completed_conversations_compared), hint: 'used as the comparison' },
+    { label: 'Chats that ended in a sale', value: nf.format(d.chats.completed), hint: `${nf.format(d.completed_conversations_compared)} with messages, used as the comparison` },
     { label: 'Chats still open', value: nf.format(d.chats.open) },
   ]);
 
@@ -74,6 +75,9 @@ function render(d) {
   }
 
   const phrases = d.phrases.slice(0, 10);
+  el('c-phrases').parentElement.hidden = !phrases.length;
+  el('phrases-empty').hidden = phrases.length > 0;
+  el('phrases-empty').textContent = `No two-word phrase repeats in ${d.min_conversations} or more failed chats yet.`;
   draw('c-phrases', {
     type: 'bar',
     data: { labels: phrases.map(p => p.phrase), datasets: [bar('Times written', phrases.map(p => p.count), 1)] },
@@ -122,6 +126,7 @@ function render(d) {
     `Only the <strong>last ${d.last_messages} messages</strong> before the cancellation (or before the chat went quiet) are read. Meeting proposal cards are skipped because the server writes them.`,
     'Text is lowercased and accents are removed. Photos (links), e-mails, numbers, words shorter than 3 letters, connectors and greetings are dropped.',
     `A word or phrase only shows up when at least <strong>${d.min_conversations} different chats</strong> use it, so names or personal details from a single conversation never reach the dashboard.`,
+    'First names and surnames of registered students are dropped too, even when several chats use them.',
     'Chats that ended in a completed exchange are read the same way and used as the comparison: a word is highlighted when a larger share of failed chats use it.',
   ].map(t => `<li>${t}</li>`).join('');
 

@@ -2,7 +2,9 @@ from datetime import datetime, timedelta, timezone
 
 from django.test import SimpleTestCase
 
-from .views import ABANDONED_AFTER_DAYS, classify_chats, message_phrases, message_words, summarize_failed_chat_words
+from .views import (
+    ABANDONED_AFTER_DAYS, classify_chats, message_phrases, message_words, student_name_words, summarize_failed_chat_words,
+)
 
 NOW = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
 START = datetime(2026, 10, 1, 9, tzinfo=timezone.utc)
@@ -132,3 +134,13 @@ class SummarizeFailedChatWordsTestCase(SimpleTestCase):
 
         self.assertEqual(result['conversations_analyzed'], 0)
         self.assertEqual(result['chats'], {'cancelled': 1, 'abandoned': 0, 'completed': 0, 'open': 1})
+
+    def test_student_names_are_hidden_even_in_several_chats(self):
+        outcomes = {'r1': ('abandoned', None), 'r2': ('cancelled', None)}
+        messages = [msg('r1', 0, 'Angie el precio final'), msg('r2', 0, 'angie precio final')]
+        hidden = student_name_words(['Angie Gutiérrez Trujillo', 'Prueba Dos', 'Al'])
+        result = summarize_failed_chat_words(outcomes, messages, hidden_words=hidden)
+
+        self.assertEqual(hidden, {'angie', 'gutierrez', 'trujillo', 'prueba', 'dos'})
+        self.assertEqual([w['word'] for w in result['words']], ['final', 'precio'])
+        self.assertEqual(result['phrases'], [{'phrase': 'precio final', 'count': 2, 'conversations': 2}])
