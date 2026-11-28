@@ -20,5 +20,6 @@ urlpatterns = [
     path('failed-chat-words/', views.failed_chat_words, name='failed-chat-words'),
     path('meetup-outcomes/', views.meetup_outcomes, name='meetup-outcomes'),
     path('seller-reputation/', views.seller_reputation, name='seller-reputation'),
+    path('course-demand/', views.course_demand, name='course-demand'),
     path('major-activity/', views.major_activity, name='major-activity'),
 ]

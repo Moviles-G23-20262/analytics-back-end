@@ -42,7 +42,8 @@ def api_root(request):
             "meetup_outcomes": "/analytics/meetup-outcomes/",
             "price_stats": "/analytics/price-stats/?category=BOOKS&condition=GOOD",
             "seller_reputation": "/analytics/seller-reputation/",
-            "major_activity": "/analytics/major-activity/"
+            "major_activity": "/analytics/major-activity/",
+            "course_demand": "/analytics/course-demand/"
         }
     })
 
