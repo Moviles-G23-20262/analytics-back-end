@@ -55,9 +55,9 @@ function render(d) {
   const failed = d.chats.cancelled + d.chats.abandoned;
 
   tiles('tiles', [
-    { label: 'Chats that fell through', value: nf.format(d.conversations_analyzed), hint: `${nf.format(d.chats.cancelled)} cancelled · ${nf.format(d.chats.abandoned)} abandoned` },
+    { label: 'Chats that fell through', value: nf.format(failed), hint: `${nf.format(d.chats.cancelled)} cancelled · ${nf.format(d.chats.abandoned)} abandoned · ${nf.format(d.conversations_analyzed)} with messages to read` },
     { label: 'Messages read', value: nf.format(d.messages_analyzed), hint: `last ${d.last_messages} of each chat` },
-    { label: 'Chats that ended in a sale', value: nf.format(d.completed_conversations_compared), hint: 'used as the comparison' },
+    { label: 'Chats that ended in a sale', value: nf.format(d.chats.completed), hint: `${nf.format(d.completed_conversations_compared)} with messages, used as the comparison` },
     { label: 'Chats still open', value: nf.format(d.chats.open) },
   ]);
 
