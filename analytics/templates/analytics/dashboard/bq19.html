@@ -1,0 +1,94 @@
+{% extends "analytics/dashboard/base.html" %}
+{% block title %}BQ19 · Course demand vs supply{% endblock %}
+{% block content %}
+{% include "analytics/dashboard/_hero.html" %}
+
+<div class="tiles" id="tiles"></div>
+
+<h2 class="section-title">Where students want more listings</h2>
+<div class="grid2">
+  <section class="card">
+    <h2>Interested students vs listings on sale</h2>
+    <p class="sub">Per course, the students who opened a chat or saved a listing, next to the listings still available. Biggest gap first.</p>
+    <div class="chart-box tall"><canvas id="c-gap" role="img" aria-label="Interested students and available listings per course"></canvas></div>
+  </section>
+  <section class="card">
+    <h2>Interested students per listing</h2>
+    <p class="sub">How many interested students each available listing has. From 2 the course is short of listings; with none on sale it is short anyway.</p>
+    <div class="chart-box tall"><canvas id="c-ratio" role="img" aria-label="Interested students per available listing per course"></canvas></div>
+  </section>
+</div>
+
+<h2 class="section-title">Insights</h2>
+<section class="card"><ul class="insights" id="insights"></ul></section>
+
+<h2 class="section-title">How this is calculated</h2>
+<section class="card">
+  <ul class="method">
+    <li>Course codes are compared without spaces, dashes or case, so "mate 1203" and "MATE-1203" are the same course. Listings without a course code are counted apart.</li>
+    <li><strong>Supply</strong> is the listings of the course that are still <code>AVAILABLE</code>; reserved and sold ones are shown but not counted as stock.</li>
+    <li><strong>Demand</strong> is the students interested in any listing of the course: buyers who opened a chat about it (<code>ChatRoom</code>) or saved it to their wishlist (<code>WishlistItem</code>). A student counts once per course.</li>
+    <li>A course is <strong>short of listings</strong> when it has interested students and nothing on sale, or at least 2 interested students per available listing. The <strong>gap</strong> is demand minus supply.</li>
+  </ul>
+  <details><summary>Data table</summary><div class="table-wrap"><table id="t-data"></table></div></details>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function render(d) {
+  setAnswer(HEADLINES[19](d));
+  const rows = d.courses.slice(0, 12);
+  const top = d.courses.find(c => c.status === 'shortage');
+
+  tiles('tiles', [
+    { label: 'Courses with listings', value: nf.format(d.total_courses) },
+    { label: 'Short of listings', value: nf.format(d.shortage_courses), hint: `≥ ${d.shortage_ratio} interested per listing, or none on sale` },
+    { label: 'Most wanted', value: top ? esc(top.course) : '–', hint: top ? plural(top.interested_students, 'interested student') : '' },
+    { label: 'Listings without course', value: nf.format(d.listings_without_course), hint: 'cannot be matched to a course' },
+  ]);
+
+  draw('c-gap', {
+    type: 'bar',
+    data: {
+      labels: rows.map(r => r.course),
+      datasets: [
+        bar('Interested students', rows.map(r => r.interested_students), 1),
+        bar('Listings on sale', rows.map(r => r.available), 3),
+      ],
+    },
+    options: baseOptions({ horizontal: true, counts: true }),
+  });
+
+  const rated = rows.filter(r => r.interested_students);
+  draw('c-ratio', {
+    type: 'bar',
+    data: {
+      labels: rated.map(r => r.course),
+      datasets: [bar('Interested per listing', rated.map(r => r.demand_per_listing ?? r.interested_students), 2)],
+    },
+    options: baseOptions({
+      legend: false,
+      horizontal: true,
+      plugins: { tooltip: { callbacks: { label: c => rated[c.dataIndex].available ? `${nf.format(c.parsed.x)} interested per listing` : `${plural(rated[c.dataIndex].interested_students, 'student')}, nothing on sale` } } },
+    }),
+  });
+
+  const list = [];
+  if (d.total_courses) {
+    const empty = d.courses.filter(c => c.status === 'shortage' && !c.available);
+    if (empty.length) list.push(`${empty.slice(0, 3).map(c => strong(c.course)).join(', ')} ${empty.length === 1 ? 'has' : 'have'} interested students but nothing on sale: a good place to ask sellers to publish.`);
+    if (top) list.push(`${strong(top.course)}: ${plural(top.buyers_in_chat, 'buyer')} opened a chat and ${plural(top.wishlist_saves, 'student')} saved a listing.`);
+    if (d.courses_without_demand) list.push(`${plural(d.courses_without_demand, 'course')} ${d.courses_without_demand === 1 ? 'has' : 'have'} listings nobody has shown interest in yet.`);
+    if (d.listings_without_course) list.push(`${plural(d.listings_without_course, 'listing')} ${d.listings_without_course === 1 ? 'has' : 'have'} no course code, so ${d.listings_without_course === 1 ? 'it is' : 'they are'} left out of this comparison (see BQ8).`);
+    if (d.total_courses < 10) list.push(`Only ${plural(d.total_courses, 'course')} so far: the ranking will move as more listings get a course code.`);
+  }
+  insights('insights', list);
+
+  table('t-data', ['Course', 'Listings', 'On sale', 'Sold', 'Buyers in chat', 'Wishlist saves', 'Interested', 'Per listing', 'Status'],
+    d.courses.map(r => [r.course, r.listings, r.available, r.sold, r.buyers_in_chat, r.wishlist_saves, r.interested_students,
+      r.demand_per_listing === null ? '–' : nf.format(r.demand_per_listing), prettify(r.status)]));
+}
+start(render);
+</script>
+{% endblock %}

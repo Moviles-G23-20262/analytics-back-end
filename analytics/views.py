@@ -1980,6 +1980,91 @@ def major_activity(request):
     return JsonResponse(summarize_major_activity(users, listings, chat_rooms, exchanges))
 
 
+# Business Question 19
+# Which courses are most wanted compared with what is offered? For each course code: the listings
+# on sale against the students interested in that course's listings (opened a chat as a buyer or
+# saved one to the wishlist). Courses with interest and no stock are where sellers should publish.
+# A student counts once per course, however many listings or chats they have.
+SHORTAGE_RATIO = 2  # interested students per available listing from which a course is short
+
+def normalize_course(code):
+    #"mate 1203", "MATE-1203" y "Mate1203" son el mismo curso
+    if not code:
+        return None
+    cleaned = re.sub(r'[\s\-_]+', '', str(code)).upper()
+    return cleaned or None
+
+def _demand_status(demand, available):
+    if demand == 0:
+        return 'no_demand' if available else 'none'
+    if available == 0 or demand / available >= SHORTAGE_RATIO:
+        return 'shortage'
+    return 'balanced'
+
+def summarize_course_demand(listings, chat_rooms, wishlist, limit=20):
+    course_of = {}
+    courses = {}
+    without_course = 0
+    for listing in listings:
+        course = normalize_course(listing.get('course_code'))
+        if course is None:
+            without_course += 1
+            continue
+        course_of[str(listing['id'])] = course
+        row = courses.setdefault(course, {'listings': 0, 'available': 0, 'sold': 0, 'chats': set(), 'saves': set()})
+        row['listings'] += 1
+        if listing.get('status') == MaterialStatus.AVAILABLE:
+            row['available'] += 1
+        elif listing.get('status') == MaterialStatus.SOLD:
+            row['sold'] += 1
+
+    for chat in chat_rooms:
+        course = course_of.get(str(chat['material_id']))
+        if course and chat.get('buyer_id'):
+            courses[course]['chats'].add(str(chat['buyer_id']))
+    for item in wishlist:
+        course = course_of.get(str(item['material_id']))
+        if course and item.get('user_id'):
+            courses[course]['saves'].add(str(item['user_id']))
+
+    rows = []
+    for course, row in courses.items():
+        interested = row['chats'] | row['saves']
+        demand, available = len(interested), row['available']
+        rows.append({
+            'course': course,
+            'listings': row['listings'],
+            'available': available,
+            'sold': row['sold'],
+            'buyers_in_chat': len(row['chats']),
+            'wishlist_saves': len(row['saves']),
+            'interested_students': demand,
+            'demand_per_listing': round(demand / available, 2) if available else None,
+            'gap': demand - available,
+            'status': _demand_status(demand, available),
+        })
+    rows.sort(key=lambda r: (-r['gap'], -r['interested_students'], r['course']))
+
+    return {
+        'total_courses': len(rows),
+        'shortage_courses': sum(1 for r in rows if r['status'] == 'shortage'),
+        'courses_without_demand': sum(1 for r in rows if r['status'] == 'no_demand'),
+        'listings_without_course': without_course,
+        'shortage_ratio': SHORTAGE_RATIO,
+        'courses': rows[:limit],
+    }
+
+def course_demand(request):
+    try:
+        limit = max(1, min(int(request.GET.get('limit', 20)), 100))
+    except ValueError:
+        limit = 20
+    listings = Material.objects.values('id', 'course_code', 'status')
+    chat_rooms = ChatRoom.objects.values('material_id', 'buyer_id')
+    wishlist = WishlistItem.objects.values('material_id', 'user_id')
+    return JsonResponse(summarize_course_demand(listings, chat_rooms, wishlist, limit=limit))
+
+
 # Dashboard
 # One entry per implemented business question; the sidebar, the overview and each question page read from here.
 DASHBOARD_QUESTIONS = [
@@ -2083,6 +2168,12 @@ DASHBOARD_QUESTIONS = [
         'title': 'Major & faculty activity',
         'question': 'Which university majors and faculties generate the most listings, buyer inquiries, and completed exchanges?',
         'endpoint': 'major-activity',
+    },
+    {
+        'number': 19,
+        'title': 'Course demand vs supply',
+        'question': 'Which courses have the most students interested in their materials compared with how many listings are on sale?',
+        'endpoint': 'course-demand',
     },
 ]
 

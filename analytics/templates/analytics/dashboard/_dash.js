@@ -265,6 +265,14 @@ const HEADLINES = {
     if (fresh && fresh.listings && fresh.group !== top.group) text += `, against ${strong(fmtPct(fresh.sale_rate * 100))} for new sellers without reviews`;
     return text + '.';
   },
+  19(d) {
+    if (!d.total_courses) return 'No listing has a course code yet.';
+    const top = d.courses.find(c => c.status === 'shortage');
+    if (!top) return `No course is short of listings: across ${plural(d.total_courses, 'course')}, interest is covered by what is on sale.`;
+    const stock = top.available ? `only ${plural(top.available, 'listing')} on sale` : 'nothing on sale';
+    return `${strong(top.course)} is the most wanted course: ${strong(plural(top.interested_students, 'student'))} interested and ${stock}` +
+      ` (${plural(d.shortage_courses, 'course')} short of listings in total).`;
+  },
   18(d) {
     if (!d.listings_total && !d.inquiries_total) return 'No marketplace activity has been recorded across majors yet.';
     const top = (d.by_major || [])[0];

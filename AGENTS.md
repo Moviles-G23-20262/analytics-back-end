@@ -43,6 +43,7 @@ uv run python manage.py test
 | `/analytics/failed-chat-words/` | 13 | done (word cloud of the last 10 messages of cancelled or abandoned chats, compared with chats that ended in a sale; words used in fewer than 2 chats are hidden) |
 | `/analytics/meetup-outcomes/` | 16 | done (agreed meetups, meaning `ACCEPTED` meeting proposals, whose time has passed, split into completed, cancelled and not closed by the exchange of the same chat, per meeting point and campus hour; upcoming meetups and the proposals declined or withdrawn before agreeing are counted apart; dashboard page `/dash-board/bq16/`) |
 | `/analytics/seller-reputation/` | 17 | done (listings grouped by the seller's average stars and, apart, by how many reviews the seller has; per group: contact rate, buyers per listing, sale rate and median days to sell; dashboard page `/dash-board/bq17/`; the calculation lives in `analytics/seller_reputation.py`) |
+| `/analytics/course-demand/` (optional `?limit=`, default 20) | 19 | done (per normalized course code: listings on sale against distinct students who opened a chat or saved a listing of that course; `shortage` from 2 interested per available listing or none on sale; sorted by demand minus supply) |
 | Firebase Crashlytics console | 1 | outside this service |
 
 `business_questions_feasibility.md` states what the data can and cannot answer. Also check `Business-Questions.md` to know what a business question actually is.
@@ -70,4 +71,4 @@ Views already guard against a missing column or enum value with `try/except Prog
 
 - The analytics endpoints have no authentication. Anyone who can reach the service can read the aggregates. Decide whether to add a shared key or session before the dashboard is deployed publicly.
 - Nothing in the code uses a read-only database role (see the design decisions above).
-- The dashboard covers every implemented question (2 to 16). `/analytics/chat-agreement/<chatRoomId>/` has no dashboard page: it is one chat, used by the mobile app only. The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.
+- The dashboard covers every implemented question (2 to 19). `/analytics/chat-agreement/<chatRoomId>/` has no dashboard page: it is one chat, used by the mobile app only. The BQ5 endpoint itself still groups by UTC hour and weekday; only the dashboard converts it to campus time.
