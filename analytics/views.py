@@ -1708,6 +1708,10 @@ def message_words(content, keep_negations=False):
     ]
 
 
+def student_name_words(full_names):
+    return {w for name in full_names for w in _normalize(name).split() if len(w) >= 3 and w.isalpha()}
+
+
 def message_phrases(content):
     #dos palabras seguidas; una negacion solo puede abrir la frase ("no puedo"), nunca cerrarla
     tokens = message_words(content, keep_negations=True)
@@ -1756,7 +1760,8 @@ def _share(part, whole):
     return round(part / whole, 4) if whole else 0.0
 
 
-def summarize_failed_chat_words(outcomes, messages, last_messages=LAST_MESSAGES, min_conversations=MIN_CONVERSATIONS):
+def summarize_failed_chat_words(outcomes, messages, last_messages=LAST_MESSAGES, min_conversations=MIN_CONVERSATIONS,
+                                hidden_words=frozenset()):
     """Word cloud of the last messages of the chats that fell through, compared with the chats that ended in a sale.
 
     `count` is how many times a word was written; `conversations` in how many chats it appears. The shares use
@@ -1783,8 +1788,8 @@ def summarize_failed_chat_words(outcomes, messages, last_messages=LAST_MESSAGES,
 
         chat_words, chat_phrases = [], []
         for message in thread:
-            chat_words += message_words(message['content'])
-            chat_phrases += message_phrases(message['content'])
+            chat_words += [w for w in message_words(message['content']) if w not in hidden_words]
+            chat_phrases += [p for p in message_phrases(message['content']) if not hidden_words.intersection(p.split())]
 
         if outcome == 'completed':
             completed_chats += 1
@@ -1858,7 +1863,8 @@ def failed_chat_words(request):
         for row in Message.objects.values('chat_room_id').annotate(last=Max('created_at')).order_by()
     }
     outcomes = classify_chats(chat_rooms, exchanges, last_message_at, timezone.now())
-    return JsonResponse(summarize_failed_chat_words(outcomes, messages))
+    names = student_name_words(User.objects.values_list('full_name', flat=True))
+    return JsonResponse(summarize_failed_chat_words(outcomes, messages, hidden_words=names))
 
 
 def _campus_hour(moment):

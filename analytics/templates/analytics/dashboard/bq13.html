@@ -122,6 +122,7 @@ function render(d) {
     `Only the <strong>last ${d.last_messages} messages</strong> before the cancellation (or before the chat went quiet) are read. Meeting proposal cards are skipped because the server writes them.`,
     'Text is lowercased and accents are removed. Photos (links), e-mails, numbers, words shorter than 3 letters, connectors and greetings are dropped.',
     `A word or phrase only shows up when at least <strong>${d.min_conversations} different chats</strong> use it, so names or personal details from a single conversation never reach the dashboard.`,
+    'First names and surnames of registered students are dropped too, even when several chats use them.',
     'Chats that ended in a completed exchange are read the same way and used as the comparison: a word is highlighted when a larger share of failed chats use it.',
   ].map(t => `<li>${t}</li>`).join('');
 
